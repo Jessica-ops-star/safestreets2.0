@@ -63,6 +63,20 @@ async function resolveAuthenticatedUserId(req) {
 app.get("/api/hello", (req, res) => {
   res.json({ message: "Safe Streets backend is running." });
 });
+// ─────────────────────────────────────────────────────────────
+// POST /api/hardware/test — ESP32 connection test
+// ─────────────────────────────────────────────────────────────
+app.post("/api/hardware/test", (req, res) => {
+  console.log("================================");
+  console.log("✅ HARDWARE TEST RECEIVED");
+  console.log("ESP32 data:", req.body);
+  console.log("================================");
+
+  res.json({
+    success: true,
+    message: "Safe Streets backend received ESP32 test."
+  });
+});
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/sos — Full SOS Workflow (10 steps)
@@ -436,7 +450,7 @@ app.post("/api/predict-voice", async (req, res) => {
     exec(cmd, { cwd: rootDir, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
       // Clean up input temp file immediately
       if (fs.existsSync(tempFilePath)) {
-        try { fs.unlinkSync(tempFilePath); } catch {}
+        try { fs.unlinkSync(tempFilePath); } catch { }
       }
 
       if (error) {
@@ -499,7 +513,8 @@ app.use((err, req, res, next) => {
 // Start Server
 // ─────────────────────────────────────────────────────────────
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`✅ Safe Streets server running on http://localhost:${port}`);
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`✅ Safe Streets server running on port ${port}`);
   console.log(`[Twilio Config] Active Outbound FROM Number: ${getTwilioFromNumber() || "NOT CONFIGURED"}`);
 });

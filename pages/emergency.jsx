@@ -122,6 +122,19 @@ export default function Emergency() {
       
       setContacts(contactList || []);
       setTrustedPlaces(savedTrustedPlaces || []);
+
+      // Fetch user live location on mount for nearby police station & hospital context
+      try {
+        const loc = await getCurrentLocation();
+        if (loc?.latitude && loc?.longitude) {
+          setLastKnownLocation({
+            latitude: Number(loc.latitude),
+            longitude: Number(loc.longitude)
+          });
+        }
+      } catch (locErr) {
+        console.warn("Initial location fetch notice:", locErr);
+      }
     } catch (error) {
       console.error("Error loading emergency data:", error);
     } finally {
@@ -455,6 +468,149 @@ export default function Emergency() {
         <div className="lg:col-span-12 space-y-4">
             <SOSButton onSOSAlert={handleSOSAlert} disabled={!!activeAlert} />
         </div>
+
+        {/* Nearby Emergency Facilities (Hidden when SOS is active to avoid duplicate display) */}
+        {!activeAlert && (
+          <div className="lg:col-span-12">
+            <Card className="premium-card glass border-white/60 p-6 bg-white/60 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-200/60">
+                <div className="flex items-center gap-2">
+                  <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black shadow-md">
+                    <Shield className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 tracking-tight">Nearby Emergency Facilities</h3>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nearest Police Station & Medical Hospital</p>
+                  </div>
+                </div>
+                {lastKnownLocation && (
+                  <div className="text-xs font-bold text-slate-600 bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 flex items-center gap-1.5 self-start sm:self-auto">
+                    <MapPin className="w-3.5 h-3.5 text-rose-600" />
+                    <span>GPS: {lastKnownLocation.latitude.toFixed(4)}, {lastKnownLocation.longitude.toFixed(4)}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                {/* Nearest Police Station Card */}
+                <div className="p-5 rounded-2xl bg-gradient-to-br from-blue-50/90 to-slate-50 border border-blue-200/80 space-y-3 shadow-md relative overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                        <Building className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-[10px] font-black text-blue-800 uppercase tracking-wider">Nearest Police Station</div>
+                        <div className="text-sm font-black text-slate-900 line-clamp-1">{nearestPoliceStation?.name || "Searching police stations..."}</div>
+                      </div>
+                    </div>
+                    {nearestPoliceStation && (
+                      <span className="text-[11px] font-extrabold bg-blue-100 text-blue-900 px-2.5 py-1 rounded-lg border border-blue-200">
+                        📍 {nearestPoliceStation.formattedDistance}
+                      </span>
+                    )}
+                  </div>
+
+                  {nearestPoliceStation ? (
+                    <div className="space-y-3 pt-1">
+                      <div className="text-xs text-slate-600 font-medium line-clamp-2">{nearestPoliceStation.address || nearestPoliceStation.full_address}</div>
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-blue-100">
+                        <button
+                          type="button"
+                          onClick={handleNavigateToPolice}
+                          className="text-xs font-black text-white bg-blue-600 hover:bg-blue-700 px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                        >
+                          <Navigation className="w-3.5 h-3.5 fill-white" /> Navigate
+                        </button>
+                        <a
+                          href={nearestPoliceStation.mapUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-extrabold text-blue-800 hover:text-blue-950 bg-white hover:bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200 flex items-center gap-1 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> View Map
+                        </a>
+                        {nearestPoliceStation.phone ? (
+                          <a
+                            href={`tel:${nearestPoliceStation.phone}`}
+                            className="text-xs font-black text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200 flex items-center gap-1 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" /> Call ({nearestPoliceStation.phone})
+                          </a>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 font-medium italic">Phone unavailable</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium py-2 flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"></div>
+                      Locating nearest police assistance station...
+                    </div>
+                  )}
+                </div>
+
+                {/* Nearest Hospital Card */}
+                <div className="p-5 rounded-2xl bg-gradient-to-br from-rose-50/90 to-slate-50 border border-rose-200/80 space-y-3 shadow-md relative overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                        <HeartPulse className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-[10px] font-black text-rose-800 uppercase tracking-wider">Nearest Hospital</div>
+                        <div className="text-sm font-black text-slate-900 line-clamp-1">{nearestHospital?.name || "Searching medical facilities..."}</div>
+                      </div>
+                    </div>
+                    {nearestHospital && (
+                      <span className="text-[11px] font-extrabold bg-rose-100 text-rose-900 px-2.5 py-1 rounded-lg border border-rose-200">
+                        📍 {nearestHospital.formattedDistance}
+                      </span>
+                    )}
+                  </div>
+
+                  {nearestHospital ? (
+                    <div className="space-y-3 pt-1">
+                      <div className="text-xs text-slate-600 font-medium line-clamp-2">{nearestHospital.address || nearestHospital.full_address}</div>
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-rose-100">
+                        <button
+                          type="button"
+                          onClick={handleNavigateToHospital}
+                          className="text-xs font-black text-white bg-rose-600 hover:bg-rose-700 px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                        >
+                          <Navigation className="w-3.5 h-3.5 fill-white" /> Navigate
+                        </button>
+                        <a
+                          href={nearestHospital.mapUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-extrabold text-rose-800 hover:text-rose-950 bg-white hover:bg-rose-50 px-3 py-1.5 rounded-lg border border-rose-200 flex items-center gap-1 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> View Map
+                        </a>
+                        {nearestHospital.phone ? (
+                          <a
+                            href={`tel:${nearestHospital.phone}`}
+                            className="text-xs font-black text-emerald-800 hover:text-emerald-950 bg-white hover:bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200 flex items-center gap-1 transition-colors"
+                          >
+                            <Phone className="w-3.5 h-3.5" /> Call ({nearestHospital.phone})
+                          </a>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 font-medium italic">Phone unavailable</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium py-2 flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full border-2 border-rose-600 border-t-transparent animate-spin"></div>
+                      Locating nearest hospital & emergency care...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
 
         {/* Tactical Controls */}
         <div className="lg:col-span-5 space-y-8">

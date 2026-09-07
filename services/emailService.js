@@ -3,7 +3,11 @@ import { Resend } from "resend";
 
 dotenv.config();
 
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+function getResendClient() {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return null;
+  return new Resend(apiKey);
+}
 
 export async function sendEmergencyEmail({
   to,
@@ -15,7 +19,8 @@ export async function sendEmergencyEmail({
   longitude,
 }) {
   try {
-    if (!process.env.RESEND_API_KEY) {
+    const resend = getResendClient();
+    if (!resend || !process.env.RESEND_API_KEY) {
       console.warn("⚠️ RESEND_API_KEY is missing in .env. Email notification skipped.");
       return {
         success: false,

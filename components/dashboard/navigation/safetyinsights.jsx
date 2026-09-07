@@ -97,4 +97,4 @@ export default function SafetyInsights({ routes }) {
       </div>
     </motion.div>
   );
-}
+}

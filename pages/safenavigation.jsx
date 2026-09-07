@@ -20,21 +20,13 @@ import SafetyScoreCard from "../components/navigation/SafetyScoreCard.jsx";
 import MapView from "../components/map/MapView.jsx";
 import RouteLayer from "../components/map/RouteLayer.jsx";
 import SearchBox from "../components/map/SearchBox.jsx";
-import TrustedPlacesSection from "../components/navigation/TrustedPlacesSection.jsx";
-import AddEditTrustedPlaceModal from "../components/navigation/AddEditTrustedPlaceModal.jsx";
-import TrustedPlaceDetailsCard from "../components/navigation/TrustedPlaceDetailsCard.jsx";
 
 import { evaluateAllRoutes, getFastestRoute, getSafestRoute } from "../services/routing";
 import { getCommunityReports, getSafetyData } from "../services/supabaseService";
 import { monitorRouteDeviation } from "../services/routeDeviationService";
 import { analyzeRouteSafetyData } from "../services/routeSafetyAnalysis";
 import { calculateSafetyScoreEngine } from "../services/safetyScoreEngine";
-import { 
-  getTrustedPlaces, 
-  addTrustedPlace, 
-  updateTrustedPlace, 
-  deleteTrustedPlace 
-} from "../services/trustedPlacesService";
+import { getTrustedPlaces } from "../services/trustedPlacesService";
 
 export default function SafeNavigation() {
   const [origin, setOrigin] = useState({ label: "", coords: null });
@@ -48,12 +40,10 @@ export default function SafeNavigation() {
   const [safetyError, setSafetyError] = useState("");
   const [deviationAlert, setDeviationAlert] = useState("");
 
-  // Trusted Places State
+  // Trusted Places State for Map Layer
   const [trustedPlaces, setTrustedPlaces] = useState([]);
   const [trustedPlacesLoading, setTrustedPlacesLoading] = useState(true);
   const [selectedTrustedPlace, setSelectedTrustedPlace] = useState(null);
-  const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
-  const [editingPlace, setEditingPlace] = useState(null);
 
   // Live Location & Camera Lock State
   const [userLiveCoords, setUserLiveCoords] = useState(null);
@@ -232,6 +222,13 @@ export default function SafeNavigation() {
     await calculateRouteWithCoords(origin.coords, destination.coords);
   };
 
+  // Auto-calculate route when destination is supplied via URL query parameters (e.g. from Emergency page)
+  useEffect(() => {
+    if (origin.coords && destination.coords && !routes) {
+      void calculateRouteWithCoords(origin.coords, destination.coords);
+    }
+  }, [origin.coords, destination.coords]);
+
   // Trusted Places Handlers
   const handleSelectTrustedPlace = (place) => {
     setSelectedTrustedPlace(place);
@@ -262,33 +259,6 @@ export default function SafeNavigation() {
     });
 
     await calculateRouteWithCoords(srcCoords, placeCoords);
-  };
-
-  const handleOpenAddModal = () => {
-    setEditingPlace(null);
-    setIsAddEditModalOpen(true);
-  };
-
-  const handleOpenEditModal = (place) => {
-    setEditingPlace(place);
-    setIsAddEditModalOpen(true);
-  };
-
-  const handleSaveTrustedPlace = async (placeData) => {
-    if (placeData.id) {
-      await updateTrustedPlace(placeData.id, placeData);
-    } else {
-      await addTrustedPlace(placeData);
-    }
-    await loadTrustedPlacesData();
-  };
-
-  const handleDeleteTrustedPlace = async (placeId) => {
-    await deleteTrustedPlace(placeId);
-    if (selectedTrustedPlace?.id === placeId) {
-      setSelectedTrustedPlace(null);
-    }
-    await loadTrustedPlacesData();
   };
 
   const handleLocateMe = () => {
@@ -542,14 +512,6 @@ export default function SafeNavigation() {
         <NearbySafetyDisplay analysisResult={routeAnalysis} />
       )}
 
-      {/* Add / Edit Trusted Place Modal */}
-      <AddEditTrustedPlaceModal
-        isOpen={isAddEditModalOpen}
-        onClose={() => setIsAddEditModalOpen(false)}
-        onSave={handleSaveTrustedPlace}
-        editingPlace={editingPlace}
-        userLocation={userLiveCoords}
-      />
     </div>
   );
 }

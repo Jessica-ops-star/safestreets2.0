@@ -5,9 +5,9 @@ import { supabase } from "../src/lib/supabase.js";
 import { useLocationTracking } from "../hooks/useLocationTracking.js";
 import { Button } from "../components/ui/button.jsx";
 import { Card, CardContent } from "../components/ui/card.jsx";
-import { 
-  AlertTriangle, 
-  Phone, 
+import {
+  AlertTriangle,
+  Phone,
   Users,
   MapPin,
   Mic,
@@ -32,12 +32,12 @@ import EmergencyContacts from "../components/emergency/emergencycontacts.jsx";
 import { VoiceActivation } from "../components/emergency/VoiceActivation.jsx";
 import { getTrustedPlaces, findNearbyTrustedPlace, TRUSTED_PLACE_PROXIMITY_THRESHOLD_METERS } from "../services/trustedPlacesService.js";
 import { findNearestPoliceStation, findNearestHospital } from "../services/nearbySafetyService.js";
-import { 
-  getSOSState, 
-  startSOSCountdown, 
-  cancelSOSCountdown, 
-  resolveActiveSOSAlert, 
-  finalizeSOSWorkflow 
+import {
+  getSOSState,
+  startSOSCountdown,
+  cancelSOSCountdown,
+  resolveActiveSOSAlert,
+  finalizeSOSWorkflow
 } from "../services/sosStateService.js";
 
 export default function Emergency() {
@@ -119,7 +119,7 @@ export default function Emergency() {
         EmergencyContact.list(),
         getTrustedPlaces()
       ]);
-      
+
       setContacts(contactList || []);
       setTrustedPlaces(savedTrustedPlaces || []);
 
@@ -147,19 +147,110 @@ export default function Emergency() {
     syncSOSState();
 
     const handleStateChange = () => syncSOSState();
+
     window.addEventListener("sos_state_changed", handleStateChange);
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      setContacts([]);
-      EmergencyContact.clearCache();
-      if (session?.user) {
-        loadEmergencyData();
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setContacts([]);
+        EmergencyContact.clearCache();
+
+        if (session?.user) {
+          loadEmergencyData();
+        }
       }
-    });
+    );
+
+    // ============================================
+    // ESP32 HARDWARE SOS REALTIME LISTENER
+    // ============================================
+
+    const hardwareSOSChannel = supabase
+      .channel("hardware-sos-alerts")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "sos_alerts",
+        },
+        (payload) => {
+          console.log("🚨 HARDWARE SOS RECEIVED IN REACT:", payload);
+
+          const alert = payload.new;
+
+          // Make sure this alert belongs to the logged-in user
+          const currentUser = JSON.parse(
+            localStorage.getItem("current_user") || "null"
+          );
+
+          console.log("👤 Current application user:", currentUser);
+
+          if (!currentUser) {
+            console.warn("No application user found.");
+            return;
+          }
+
+          console.log("🔍 Hardware SOS user_id:", alert.user_id);
+          console.log("🔍 Current user id:", currentUser.id);
+
+          if (alert.user_id !== currentUser.id) {
+            console.log("SOS belongs to another user. Ignoring.");
+            return;
+          }
+
+          // Convert database row to the format expected by the UI
+          const hardwareAlert = {
+            id: alert.id,
+            user_id: alert.user_id,
+            latitude: Number(alert.latitude),
+            longitude: Number(alert.longitude),
+            created_at: alert.created_at,
+            created_date: alert.created_at,
+            status: "active",
+            alert_type: "hardware_sos",
+            message: "Emergency SOS triggered from Safe Streets wearable.",
+            location: "Wearable GPS Location",
+          };
+          console.log("🚨 HARDWARE SOS DETECTED:", hardwareAlert);
+
+          // Start the existing 45-second SOS countdown
+          const countdownState = startSOSCountdown(
+            "hardware_sos",
+            "Emergency SOS triggered from Safe Streets wearable.",
+            "HARDWARE"
+          );
+
+          console.log("⏱️ Hardware SOS countdown started:", countdownState);
+
+          // Save the hardware GPS location
+          setLastKnownLocation({
+            latitude: Number(alert.latitude),
+            longitude: Number(alert.longitude),
+          });
+
+          // Start showing the countdown in the software
+          setActiveAlert(null);
+          setCountdownActive(true);
+          setWorkflowStatus("Emergency countdown started");
+
+          setWorkflowMessage(
+            `Hardware SOS detected at ${Number(alert.latitude).toFixed(4)}, ${Number(alert.longitude).toFixed(4)}.`
+          );
+
+
+        },
+      )
+      .subscribe((status) => {
+        console.log("📡 Hardware SOS realtime status:", status);
+      });
 
     return () => {
       window.removeEventListener("sos_state_changed", handleStateChange);
       authListener?.subscription?.unsubscribe();
+
+      // Remove Supabase Realtime listener
+      supabase.removeChannel(hardwareSOSChannel);
     };
   }, []);
 
@@ -275,22 +366,22 @@ export default function Emergency() {
             className="premium-card bg-rose-600 p-8 text-white shadow-2xl shadow-rose-600/40 overflow-hidden relative space-y-6"
           >
             <div className="absolute top-0 right-0 w-64 h-64 bg-white/20 blur-[100px] rounded-full -mr-32 -mt-32 animate-pulse"></div>
-            
+
             <div className="flex flex-col md:flex-row items-center justify-between gap-8 relative z-10 border-b border-white/20 pb-6">
               <div className="flex items-center gap-6">
                 <div className="w-20 h-20 bg-white/20 backdrop-blur-xl rounded-[2rem] flex items-center justify-center border border-white/30 shadow-inner shrink-0">
-                   <AlertTriangle className="w-10 h-10 text-white animate-bounce" />
+                  <AlertTriangle className="w-10 h-10 text-white animate-bounce" />
                 </div>
                 <div>
-                   <h3 className="text-3xl font-black tracking-tight mb-1">🚨 SOS ACTIVE</h3>
-                   <p className="text-rose-100 font-bold uppercase tracking-[0.2em] text-xs pl-0.5">
-                     Dispatch initiated at {new Date(activeAlert.created_date || activeAlert.created_at).toLocaleTimeString()}
-                   </p>
+                  <h3 className="text-3xl font-black tracking-tight mb-1">🚨 SOS ACTIVE</h3>
+                  <p className="text-rose-100 font-bold uppercase tracking-[0.2em] text-xs pl-0.5">
+                    Dispatch initiated at {new Date(activeAlert.created_date || activeAlert.created_at).toLocaleTimeString()}
+                  </p>
                 </div>
               </div>
-              
-              <Button 
-                onClick={resolveAlert} 
+
+              <Button
+                onClick={resolveAlert}
                 variant="outline"
                 className="btn-premium bg-white text-slate-900 hover:bg-slate-100 border-0 px-8 py-6 h-auto text-lg font-black shrink-0 shadow-md transition-colors"
               >
@@ -466,7 +557,7 @@ export default function Emergency() {
       <div className="grid lg:grid-cols-12 gap-10">
         {/* SOS Action Center */}
         <div className="lg:col-span-12 space-y-4">
-            <SOSButton onSOSAlert={handleSOSAlert} disabled={!!activeAlert} />
+          <SOSButton onSOSAlert={handleSOSAlert} disabled={!!activeAlert} />
         </div>
 
         {/* Nearby Emergency Facilities (Hidden when SOS is active to avoid duplicate display) */}
@@ -614,78 +705,78 @@ export default function Emergency() {
 
         {/* Tactical Controls */}
         <div className="lg:col-span-5 space-y-8">
-           <Card className="premium-card glass border-white/60 p-8 bg-white/40 shadow-xl">
-              <div className="space-y-10">
-                 <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-500">
-                       <Mic className="w-6 h-6" />
-                    </div>
-                    <div>
-                       <h3 className="text-xl font-black text-slate-900 tracking-tight">Voice Engagement</h3>
-                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acoustic Signal Recognition</p>
-                    </div>
-                 </div>
-
-                 <VoiceActivation 
-                   isListening={isListening}
-                   onToggleListening={setIsListening}
-                   onVoiceAlert={handleSOSAlert}
-                   disabled={!!activeAlert}
-                 />
-                 
-                 <div className="pt-6 border-t border-slate-100/50 flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-emerald-500 animate-ping' : 'bg-slate-300'}`}></div>
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      {isListening ? 'Listening for strategic keywords...' : 'Voice protocol standby'}
-                    </span>
-                 </div>
+          <Card className="premium-card glass border-white/60 p-8 bg-white/40 shadow-xl">
+            <div className="space-y-10">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-500">
+                  <Mic className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 tracking-tight">Voice Engagement</h3>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Acoustic Signal Recognition</p>
+                </div>
               </div>
-           </Card>
 
-           <Card className="premium-card glass-dark p-8 border-0 shadow-2xl">
-              <div className="space-y-6">
-                 <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-white">
-                       <LifeBuoy className="w-6 h-6" />
-                    </div>
-                    <div>
-                       <h3 className="text-xl font-black text-white tracking-tight">Rapid Response</h3>
-                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Immediate Sector Support</p>
-                    </div>
-                 </div>
-                 
-                 <p className="text-slate-400 text-sm font-medium leading-relaxed">
-                   Direct connection to regional dispatch centers is synchronized. 
-                   <span className="text-emerald-400 italic"> Tactical Guardian units</span> are briefed on your real-time vector.
-                 </p>
-                 
-                 <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-sm text-slate-300">
-                   <div className="font-semibold text-white">Protocol status</div>
-                   <div>{workflowStatus}</div>
-                   {lastKnownLocation && (
-                     <div className="mt-2 text-xs text-slate-400 font-mono">
-                       Last known GPS: {lastKnownLocation.latitude.toFixed(4)}, {lastKnownLocation.longitude.toFixed(4)}
-                     </div>
-                   )}
-                 </div>
-                 
-                 <Button className="w-full btn-premium bg-white/10 text-white hover:bg-white/20 border-white/20 font-bold">
-                    Access Local Dispatch
-                    <Phone className="w-4 h-4 ml-2" />
-                 </Button>
+              <VoiceActivation
+                isListening={isListening}
+                onToggleListening={setIsListening}
+                onVoiceAlert={handleSOSAlert}
+                disabled={!!activeAlert}
+              />
+
+              <div className="pt-6 border-t border-slate-100/50 flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-emerald-500 animate-ping' : 'bg-slate-300'}`}></div>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                  {isListening ? 'Listening for strategic keywords...' : 'Voice protocol standby'}
+                </span>
               </div>
-           </Card>
+            </div>
+          </Card>
+
+          <Card className="premium-card glass-dark p-8 border-0 shadow-2xl">
+            <div className="space-y-6">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-white">
+                  <LifeBuoy className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-white tracking-tight">Rapid Response</h3>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Immediate Sector Support</p>
+                </div>
+              </div>
+
+              <p className="text-slate-400 text-sm font-medium leading-relaxed">
+                Direct connection to regional dispatch centers is synchronized.
+                <span className="text-emerald-400 italic"> Tactical Guardian units</span> are briefed on your real-time vector.
+              </p>
+
+              <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-sm text-slate-300">
+                <div className="font-semibold text-white">Protocol status</div>
+                <div>{workflowStatus}</div>
+                {lastKnownLocation && (
+                  <div className="mt-2 text-xs text-slate-400 font-mono">
+                    Last known GPS: {lastKnownLocation.latitude.toFixed(4)}, {lastKnownLocation.longitude.toFixed(4)}
+                  </div>
+                )}
+              </div>
+
+              <Button className="w-full btn-premium bg-white/10 text-white hover:bg-white/20 border-white/20 font-bold">
+                Access Local Dispatch
+                <Phone className="w-4 h-4 ml-2" />
+              </Button>
+            </div>
+          </Card>
         </div>
 
         {/* Guardian Management */}
         <div className="lg:col-span-7">
-           <Card className="premium-card glass border-white/60 p-1 bg-white/20 h-full">
-              <EmergencyContacts 
-                contacts={contacts}
-                loading={loading}
-                onContactsChange={loadEmergencyData}
-              />
-           </Card>
+          <Card className="premium-card glass border-white/60 p-1 bg-white/20 h-full">
+            <EmergencyContacts
+              contacts={contacts}
+              loading={loading}
+              onContactsChange={loadEmergencyData}
+            />
+          </Card>
         </div>
       </div>
     </div>

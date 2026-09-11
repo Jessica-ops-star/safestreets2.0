@@ -164,12 +164,16 @@ export default function Profile() {
   const handleSavePlace = async (placePayload) => {
     try {
       const activeUserId = user?.id;
+      let savedPlace = null;
       if (editingPlace) {
-        await updateTrustedPlace(editingPlace.id, placePayload, activeUserId);
+        savedPlace = await updateTrustedPlace(editingPlace.id, placePayload, activeUserId);
         setPlaceFeedback({ type: "success", message: `Updated "${placePayload.place_name}" successfully.` });
       } else {
-        await addTrustedPlace(placePayload, activeUserId);
+        savedPlace = await addTrustedPlace(placePayload, activeUserId);
         setPlaceFeedback({ type: "success", message: `Added "${placePayload.place_name}" to Trusted Places.` });
+      }
+      if (savedPlace) {
+        setSelectedTrustedPlace(savedPlace);
       }
       await loadUserData();
       setIsAddEditPlaceModalOpen(false);

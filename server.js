@@ -77,7 +77,202 @@ app.post("/api/hardware/test", (req, res) => {
     message: "Safe Streets backend received ESP32 test."
   });
 });
+// ─────────────────────────────────────────────────────────────
+// POST /api/hardware/sos — Safe ESP32 SOS Test
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// POST /api/hardware/sos — Identify ESP32 owner
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// POST /api/hardware/sos — Create SOS alert from ESP32
+// ─────────────────────────────────────────────────────────────
+app.post("/api/hardware/sos", async (req, res) => {
+  try {
 
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not configured."
+      });
+    }
+
+    // ---------------------------------------------------------
+    // Get data from ESP32
+    // ---------------------------------------------------------
+
+    const deviceId = req.body?.deviceId;
+    const reason = req.body?.reason || "Hardware SOS";
+
+    const latitude = Number(req.body?.latitude);
+    const longitude = Number(req.body?.longitude);
+
+    if (!deviceId) {
+      return res.status(400).json({
+        success: false,
+        error: "deviceId is required."
+      });
+    }
+
+    console.log("================================");
+    console.log("🚨 HARDWARE SOS RECEIVED");
+    console.log("Device ID:", deviceId);
+    console.log("Reason:", reason);
+    console.log("Latitude:", latitude);
+    console.log("Longitude:", longitude);
+    console.log("================================");
+
+
+    // ---------------------------------------------------------
+    // STEP 1: Find registered ESP32
+    // ---------------------------------------------------------
+
+    const { data: device, error: deviceError } = await supabase
+      .from("hardware_devices")
+      .select("device_id, device_name, user_id")
+      .eq("device_id", deviceId)
+      .single();
+
+    if (deviceError || !device) {
+
+      console.error(
+        "❌ Hardware device not registered:",
+        deviceError?.message
+      );
+
+      return res.status(404).json({
+        success: false,
+        error: "This ESP32 device is not registered."
+      });
+    }
+
+    console.log("✅ Device found:", device.device_id);
+    console.log("✅ Device owner:", device.user_id);
+
+
+    // ---------------------------------------------------------
+    // STEP 2: Find user
+    // ---------------------------------------------------------
+
+    const { data: userRecord, error: userError } = await supabase
+      .from("users")
+      .select("id, full_name, email, phone")
+      .eq("id", device.user_id)
+      .single();
+
+    if (userError || !userRecord) {
+
+      console.error(
+        "❌ User not found:",
+        userError?.message
+      );
+
+      return res.status(404).json({
+        success: false,
+        error: "User associated with this ESP32 was not found."
+      });
+    }
+
+    console.log("✅ User identified:", userRecord.full_name);
+
+
+    // ---------------------------------------------------------
+    // STEP 3: Validate GPS
+    // ---------------------------------------------------------
+
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude === 0 ||
+      longitude === 0
+    ) {
+
+      console.warn("⚠️ GPS location is not available.");
+
+      return res.status(400).json({
+        success: false,
+        error: "GPS location is not available. SOS alert was not created."
+      });
+    }
+
+
+    // ---------------------------------------------------------
+    // STEP 4: Create SOS alert
+    // ---------------------------------------------------------
+
+    const now = new Date().toISOString();
+
+    const { data: alertData, error: alertError } = await supabase
+      .from("sos_alerts")
+      .insert({
+        user_id: device.user_id,
+        latitude: latitude,
+        longitude: longitude,
+        created_at: now
+      })
+      .select()
+      .single();
+
+    if (alertError) {
+
+      console.error(
+        "❌ Failed to create SOS alert:",
+        alertError.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: "Failed to create SOS alert."
+      });
+    }
+
+    console.log("================================");
+    console.log("🚨 SOFTWARE SOS ALERT CREATED");
+    console.log("Alert ID:", alertData.id);
+    console.log("User:", userRecord.full_name);
+    console.log("Latitude:", latitude);
+    console.log("Longitude:", longitude);
+    console.log("================================");
+
+
+    // ---------------------------------------------------------
+    // STEP 5: Return success
+    // ---------------------------------------------------------
+
+    return res.json({
+
+      success: true,
+
+      message: "Hardware SOS created successfully.",
+
+      alert: alertData,
+
+      user: {
+        id: userRecord.id,
+        full_name: userRecord.full_name
+      },
+
+      location: {
+        latitude,
+        longitude
+      },
+
+      reason
+
+    });
+
+  } catch (err) {
+
+    console.error(
+      "❌ Hardware SOS error:",
+      err
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Hardware SOS processing failed."
+    });
+  }
+});
 // ─────────────────────────────────────────────────────────────
 // POST /api/sos — Full SOS Workflow (10 steps)
 // ─────────────────────────────────────────────────────────────

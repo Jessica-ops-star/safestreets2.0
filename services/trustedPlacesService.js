@@ -2,11 +2,32 @@ import { supabase } from "../src/lib/supabase.js";
 
 export const TRUSTED_PLACE_PROXIMITY_THRESHOLD_METERS = 500;
 
+function normalizePlace(item) {
+  if (!item) return null;
+  const nameVal = item.place_name || item.name || "Trusted Place";
+  const addrVal = item.formatted_address || item.address || "";
+  const catVal = item.category || "Other";
+  return {
+    id: item.id,
+    user_id: item.user_id,
+    place_name: nameVal,
+    name: nameVal,
+    category: catVal,
+    formatted_address: addrVal,
+    address: addrVal,
+    latitude: Number(item.latitude || 0),
+    longitude: Number(item.longitude || 0),
+    created_at: item.created_at || new Date().toISOString()
+  };
+}
+
 function readUserStore(userId) {
   if (typeof window === "undefined" || !userId) return [];
   try {
-    const raw = localStorage.getItem(`trusted_places_${userId}`);
-    return raw ? JSON.parse(raw) : [];
+    const raw = window.localStorage.getItem(`trusted_places_${userId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizePlace).filter(Boolean) : [];
   } catch {
     return [];
   }
@@ -15,7 +36,8 @@ function readUserStore(userId) {
 function writeUserStore(userId, places) {
   if (typeof window === "undefined" || !userId) return;
   try {
-    localStorage.setItem(`trusted_places_${userId}`, JSON.stringify(places));
+    const normalized = (places || []).map(normalizePlace).filter(Boolean);
+    window.localStorage.setItem(`trusted_places_${userId}`, JSON.stringify(normalized));
   } catch (err) {
     console.warn("Failed to write local trusted places cache:", err);
   }
@@ -31,16 +53,14 @@ async function getAuthUserId(overrideUserId = null) {
     const { data: sessionData } = await supabase.auth.getSession();
     if (sessionData?.session?.user?.id) return sessionData.session.user.id;
     if (typeof window !== "undefined") {
-      const localUser = localStorage.getItem("current_user");
+      const localUser = window.localStorage.getItem("current_user");
       if (localUser) {
         const u = JSON.parse(localUser);
         if (u?.id && u.id !== "me" && u.id !== "guest") return u.id;
       }
     }
-    return null;
-  } catch {
-    return null;
-  }
+  } catch {}
+  return "local_user";
 }
 
 /**
@@ -48,17 +68,32 @@ async function getAuthUserId(overrideUserId = null) {
  */
 export async function getTrustedPlaces(overrideUserId = null) {
   const userId = await getAuthUserId(overrideUserId);
-  if (!userId) return [];
+  const localItems = readUserStore(userId);
 
   try {
     const { data, error } = await supabase
       .from("trusted_places")
       .select("*")
+      .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
     if (!error && Array.isArray(data)) {
-      writeUserStore(userId, data);
-      return data;
+      const dbMap = new Map();
+      // Populate with Supabase data
+      data.forEach((item) => {
+        const norm = normalizePlace(item);
+        if (norm?.id) dbMap.set(norm.id, norm);
+      });
+      // Merge local items not yet in Supabase (prevent cache loss)
+      localItems.forEach((item) => {
+        const norm = normalizePlace(item);
+        if (norm?.id && !dbMap.has(norm.id)) {
+          dbMap.set(norm.id, norm);
+        }
+      });
+      const merged = Array.from(dbMap.values());
+      writeUserStore(userId, merged);
+      return merged;
     }
 
     if (error) {
@@ -68,7 +103,7 @@ export async function getTrustedPlaces(overrideUserId = null) {
     console.warn("Exception fetching trusted_places from Supabase:", err);
   }
 
-  return readUserStore(userId);
+  return localItems;
 }
 
 /**
@@ -76,18 +111,18 @@ export async function getTrustedPlaces(overrideUserId = null) {
  */
 export async function addTrustedPlace(placeData, overrideUserId = null) {
   const userId = await getAuthUserId(overrideUserId);
-  if (!userId) {
-    throw new Error("User authentication required to save a trusted place.");
-  }
 
-  const payload = {
+  const nameVal = (placeData.place_name || placeData.name || "").trim();
+  const addrVal = (placeData.formatted_address || placeData.address || "").trim();
+  const catVal = placeData.category || "Other";
+
+  // Database payload only contains columns present in Supabase trusted_places table
+  const dbPayload = {
     user_id: userId,
-    place_name: placeData.place_name.trim(),
-    category: placeData.category || "Other",
-    formatted_address: placeData.formatted_address.trim(),
+    name: nameVal,
+    address: addrVal,
     latitude: Number(placeData.latitude),
-    longitude: Number(placeData.longitude),
-    updated_at: new Date().toISOString()
+    longitude: Number(placeData.longitude)
   };
 
   let createdPlace = null;
@@ -95,29 +130,36 @@ export async function addTrustedPlace(placeData, overrideUserId = null) {
   try {
     const { data, error } = await supabase
       .from("trusted_places")
-      .insert([payload])
+      .insert([dbPayload])
       .select()
       .single();
 
     if (!error && data) {
-      createdPlace = data;
+      createdPlace = normalizePlace({ ...data, category: catVal, place_name: nameVal, formatted_address: addrVal });
     } else if (error) {
-      console.warn("Supabase insert trusted_places error (falling back to local cache):", error.message);
+      console.warn("Supabase insert trusted_places notice (falling back to local cache):", error.message);
     }
   } catch (err) {
     console.warn("Exception inserting trusted_places in Supabase:", err);
   }
 
   if (!createdPlace) {
-    createdPlace = {
+    createdPlace = normalizePlace({
       id: `tp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      ...payload,
+      user_id: userId,
+      place_name: nameVal,
+      name: nameVal,
+      category: catVal,
+      formatted_address: addrVal,
+      address: addrVal,
+      latitude: Number(placeData.latitude),
+      longitude: Number(placeData.longitude),
       created_at: new Date().toISOString()
-    };
+    });
   }
 
   const currentLocal = readUserStore(userId);
-  const updatedLocal = [createdPlace, ...currentLocal];
+  const updatedLocal = [createdPlace, ...currentLocal.filter((p) => p.id !== createdPlace.id)];
   writeUserStore(userId, updatedLocal);
 
   return createdPlace;
@@ -128,17 +170,19 @@ export async function addTrustedPlace(placeData, overrideUserId = null) {
  */
 export async function updateTrustedPlace(id, updates, overrideUserId = null) {
   const userId = await getAuthUserId(overrideUserId);
-  if (!userId || !id) {
-    throw new Error("Authentication and valid place ID required to update.");
+  if (!id) {
+    throw new Error("Valid place ID required to update.");
   }
 
-  const payload = {
-    place_name: updates.place_name?.trim(),
-    category: updates.category,
-    formatted_address: updates.formatted_address?.trim(),
+  const nameVal = (updates.place_name || updates.name || "").trim();
+  const addrVal = (updates.formatted_address || updates.address || "").trim();
+  const catVal = updates.category || "Other";
+
+  const dbPayload = {
+    name: nameVal,
+    address: addrVal,
     latitude: Number(updates.latitude),
-    longitude: Number(updates.longitude),
-    updated_at: new Date().toISOString()
+    longitude: Number(updates.longitude)
   };
 
   let updatedPlace = null;
@@ -146,14 +190,14 @@ export async function updateTrustedPlace(id, updates, overrideUserId = null) {
   try {
     const { data, error } = await supabase
       .from("trusted_places")
-      .update(payload)
+      .update(dbPayload)
       .eq("id", id)
       .eq("user_id", userId)
       .select()
       .single();
 
     if (!error && data) {
-      updatedPlace = data;
+      updatedPlace = normalizePlace({ ...data, category: catVal, place_name: nameVal, formatted_address: addrVal });
     } else if (error) {
       console.warn("Supabase update trusted_places notice:", error.message);
     }
@@ -163,10 +207,26 @@ export async function updateTrustedPlace(id, updates, overrideUserId = null) {
 
   const currentLocal = readUserStore(userId);
   const idx = currentLocal.findIndex((p) => p.id === id);
+  const fullUpdateObj = normalizePlace({
+    id,
+    user_id: userId,
+    place_name: nameVal,
+    name: nameVal,
+    category: catVal,
+    formatted_address: addrVal,
+    address: addrVal,
+    latitude: Number(updates.latitude),
+    longitude: Number(updates.longitude)
+  });
+
   if (idx >= 0) {
-    currentLocal[idx] = { ...currentLocal[idx], ...payload };
+    currentLocal[idx] = { ...currentLocal[idx], ...fullUpdateObj };
     writeUserStore(userId, currentLocal);
     if (!updatedPlace) updatedPlace = currentLocal[idx];
+  } else if (!updatedPlace) {
+    updatedPlace = fullUpdateObj;
+    currentLocal.unshift(updatedPlace);
+    writeUserStore(userId, currentLocal);
   }
 
   return updatedPlace;
@@ -177,7 +237,7 @@ export async function updateTrustedPlace(id, updates, overrideUserId = null) {
  */
 export async function deleteTrustedPlace(id, overrideUserId = null) {
   const userId = await getAuthUserId(overrideUserId);
-  if (!userId || !id) return false;
+  if (!id) return false;
 
   try {
     const { error } = await supabase

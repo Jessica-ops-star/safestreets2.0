@@ -31,10 +31,17 @@ const CATEGORY_ICONS = {
 };
 
 export default function TrustedPlaceDetailsCard({
-  trustedPlace,
+  trustedPlace: trustedPlaceProp,
+  place: placeProp,
   onStartNavigation,
-  onClose
+  onNavigate,
+  onClose,
+  onEdit,
+  onDelete
 }) {
+  const trustedPlace = trustedPlaceProp || placeProp;
+  const handleNavigation = onStartNavigation || onNavigate;
+
   const [policeStation, setPoliceStation] = useState(null);
   const [hospital, setHospital] = useState(null);
   const [loadingSafety, setLoadingSafety] = useState(true);
@@ -76,7 +83,7 @@ export default function TrustedPlaceDetailsCard({
   return (
     <Card className="premium-card glass border-white/60 shadow-2xl p-6 bg-white/70 space-y-6 animate-in fade-in duration-300">
       {/* Selected Place Header */}
-      <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-200/60">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-4 border-b border-slate-200/60">
         <div className="flex items-start gap-3.5">
           <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center shrink-0 shadow-md">
             <CatIcon className="w-6 h-6 text-emerald-400" />
@@ -95,13 +102,37 @@ export default function TrustedPlaceDetailsCard({
           </div>
         </div>
 
-        <Button
-          onClick={() => onStartNavigation(trustedPlace)}
-          className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-5 py-2.5 h-auto text-sm shrink-0 shadow-lg shadow-emerald-600/20 flex items-center gap-2"
-        >
-          <span>Start Navigation</span>
-          <Navigation className="w-4 h-4 fill-white" />
-        </Button>
+        <div className="flex items-center gap-2 shrink-0 self-end sm:self-start">
+          {onEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onEdit(trustedPlace)}
+              className="rounded-xl border-slate-300 text-slate-700 hover:bg-slate-100 font-bold text-xs px-3 py-2"
+            >
+              Edit
+            </Button>
+          )}
+          {onDelete && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onDelete(trustedPlace.id)}
+              className="rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 font-bold text-xs px-3 py-2"
+            >
+              Delete
+            </Button>
+          )}
+          {handleNavigation && (
+            <Button
+              onClick={() => handleNavigation(trustedPlace)}
+              className="btn-premium bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-5 py-2.5 h-auto text-sm shadow-lg shadow-emerald-600/20 flex items-center gap-2"
+            >
+              <span>Start Navigation</span>
+              <Navigation className="w-4 h-4 fill-white" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Nearby Safety Assistance */}

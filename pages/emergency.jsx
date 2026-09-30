@@ -60,6 +60,8 @@ export default function Emergency() {
   const [nearestPoliceStation, setNearestPoliceStation] = useState(null);
   const [nearestHospital, setNearestHospital] = useState(null);
 
+  const isFinalizingRef = React.useRef(false);
+
   // Sync state with sosStateService
   const syncSOSState = () => {
     const currentState = getSOSState();
@@ -68,7 +70,7 @@ export default function Emergency() {
       setCountdownSeconds(currentState.remainingSeconds);
       setWorkflowStatus("Countdown active");
       setWorkflowMessage(`${currentState.source || "SOS"} trigger received. Emergency protocol will activate in ${currentState.remainingSeconds} seconds.`);
-      if (currentState.remainingSeconds <= 0) {
+      if (currentState.remainingSeconds <= 0 && !isFinalizingRef.current) {
         void handleFinalizeSOS();
       }
     } else if (currentState.status === "active") {
@@ -90,6 +92,10 @@ export default function Emergency() {
   };
 
   const handleFinalizeSOS = async () => {
+    if (isFinalizingRef.current) return;
+    isFinalizingRef.current = true;
+    setCountdownActive(false);
+
     try {
       setWorkflowStatus("Dispatching support");
       const res = await finalizeSOSWorkflow(contacts);
@@ -100,7 +106,6 @@ export default function Emergency() {
           longitude: Number(res.location.longitude)
         });
       }
-      setCountdownActive(false);
       const locDisplay = res.location?.address || `${Number(res.location?.latitude).toFixed(4)}, ${Number(res.location?.longitude).toFixed(4)}`;
       setWorkflowMessage(`SOS dispatch active at ${locDisplay}.`);
       if (navigator.vibrate) navigator.vibrate([200, 100, 300]);
@@ -108,6 +113,8 @@ export default function Emergency() {
       console.error("Failed to finalize SOS:", err);
       setWorkflowStatus("Location error");
       setWorkflowMessage(err.message || "Emergency dispatch error.");
+    } finally {
+      isFinalizingRef.current = false;
     }
   };
 
@@ -178,6 +185,13 @@ export default function Emergency() {
           console.log("🚨 HARDWARE SOS RECEIVED IN REACT:", payload);
 
           const alert = payload.new;
+
+          // Prevent infinite timer loop: ignore database snapshot inserts if SOS is ALREADY active, dispatching, or counting down!
+          const currentState = getSOSState();
+          if (currentState && currentState.status && currentState.status !== "idle") {
+            console.log(`[Realtime SOS] SOS status is currently '${currentState.status}'. Ignoring insert event to avoid re-triggering timer loop.`);
+            return;
+          }
 
           // Make sure this alert belongs to the logged-in user
           const currentUser = JSON.parse(
@@ -264,9 +278,12 @@ export default function Emergency() {
         setCountdownSeconds(currentState.remainingSeconds);
         setWorkflowMessage(`${currentState.source || "SOS"} trigger received. Emergency protocol will activate in ${currentState.remainingSeconds} seconds.`);
 
-        if (currentState.remainingSeconds <= 1) {
+        if (currentState.remainingSeconds <= 0) {
           window.clearInterval(timer);
-          void handleFinalizeSOS();
+          setCountdownActive(false);
+          if (!isFinalizingRef.current) {
+            void handleFinalizeSOS();
+          }
         }
       } else {
         setCountdownActive(false);

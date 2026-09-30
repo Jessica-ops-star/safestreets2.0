@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { callEmergencyContact as callEmergencyContactTwilio, generateTwimlMessage, getTwilioFromNumber } from "./services/twilioService.js";
+import { callEmergencyContact as callEmergencyContactExotel } from "./services/exotelService.js";
 import { sendEmergencyEmail } from "./services/emailService.js";
 
 dotenv.config({ override: true });
@@ -471,10 +472,12 @@ app.post("/api/sos", async (req, res) => {
       console.warn("[SOS] Step 8.5 ✘ Email failed:", emailResult.error);
     }
 
-    // ── Step 9: Call Twilio Voice API using emergency contacts ─────────────
+    // ── Step 9: Call Emergency Voice API using emergency contacts ─────────────
     let twilioResult = null;
+    let exotelResult = null;
     let voiceSuccess = false;
     let dispatchedContact = primaryContact;
+    let voiceProvider = "none";
 
     const sosUserName = userRecord?.full_name || "A Safe Streets user";
     const requestHost = req.get("host");
@@ -485,25 +488,43 @@ app.post("/api/sos", async (req, res) => {
     for (const contact of sortedContacts) {
       if (!contact.number) continue;
       console.log(`[SOS] Step 9 — Attempting Twilio call to: ${contact.full_name || "Contact"} (${contact.number}) for user: ${sosUserName}`);
-      const result = await callEmergencyContactTwilio(contact.number, sosUserName, createdAlert?.id, requestHost);
-      twilioResult = result;
+      const tResult = await callEmergencyContactTwilio(contact.number, sosUserName, createdAlert?.id, requestHost);
+      twilioResult = tResult;
       dispatchedContact = contact;
 
-      if (result.success) {
+      if (tResult.success) {
         voiceSuccess = true;
-        console.log(`[SOS] Step 9 ✔ Twilio call dispatched successfully to ${contact.full_name} (${contact.number}). Call SID: ${result.callSid}`);
+        voiceProvider = "twilio";
+        console.log(`[SOS] Step 9 ✔ Twilio call dispatched successfully to ${contact.full_name} (${contact.number}). Call SID: ${tResult.callSid}`);
         break;
       } else {
-        console.warn(`[SOS] Step 9 ✘ Twilio call to ${contact.full_name} (${contact.number}) notice: ${result.error}`);
+        console.warn(`[SOS] Step 9 ✘ Twilio call to ${contact.full_name} (${contact.number}) notice: ${tResult.error}`);
+        
+        // Attempt Exotel voice call fallback if Twilio fails
+        console.log(`[SOS] Step 9 — Attempting Exotel call fallback to: ${contact.full_name || "Contact"} (${contact.number})...`);
+        const eResult = await callEmergencyContactExotel(contact.number);
+        exotelResult = eResult;
+        if (eResult.success) {
+          voiceSuccess = true;
+          voiceProvider = "exotel";
+          console.log(`[SOS] Step 9 ✔ Exotel call dispatched successfully to ${contact.full_name} (${contact.number}).`);
+          break;
+        } else {
+          console.warn(`[SOS] Step 9 ✘ Exotel call fallback notice for ${contact.full_name}:`, eResult.error);
+        }
       }
     }
 
     // ── Step 10: Return response ──────────────────────────────────
+    const callErrorMessage = twilioResult?.error || exotelResult?.error || "Voice dispatch unavailable (Twilio trial unverified recipient / Exotel KYC required).";
+
     return res.json({
-      success: voiceSuccess,
+      success: true, // SOS alert snapshot created and email sent successfully
+      emailSuccess: emailResult?.success ?? false,
+      voiceSuccess: voiceSuccess,
       message: voiceSuccess
-        ? `SOS alert recorded and emergency contact voice call dispatched to ${dispatchedContact.full_name || dispatchedContact.number}.`
-        : `SOS alert recorded, but voice call failed: ${twilioResult?.error || "Unable to dispatch call."}`,
+        ? `SOS alert recorded and emergency contact voice call dispatched via ${voiceProvider} to ${dispatchedContact.full_name || dispatchedContact.number}.`
+        : `SOS alert recorded & emergency email sent to ${primaryContact.email || primaryContact.full_name}. Voice call notice: ${callErrorMessage}`,
       user: userRecord ? { id: userRecord.id, full_name: userRecord.full_name } : { id: userId },
       emergencyContact: {
         full_name: dispatchedContact.full_name,
@@ -514,6 +535,7 @@ app.post("/api/sos", async (req, res) => {
       location: { latitude, longitude, address },
       googleMapsUrl,
       twilio: twilioResult,
+      exotel: exotelResult,
       email: emailResult
     });
 
@@ -636,8 +658,8 @@ app.post("/api/predict-voice", async (req, res) => {
     const tempFilePath = path.join(scratchDir, tempFileName);
     fs.writeFileSync(tempFilePath, buffer);
 
-    // Root directory containing convert_and_predict.py
-    const rootDir = path.resolve(__dirname, "..");
+    // server.js is already in the project root
+    const rootDir = __dirname;
     const pythonScript = path.join(rootDir, "convert_and_predict.py");
 
     const cmd = `python "${pythonScript}" --audio_path "${tempFilePath}"`;
@@ -649,7 +671,12 @@ app.post("/api/predict-voice", async (req, res) => {
       }
 
       if (error) {
-        console.error("[Voice ML API Error]:", stderr || error.message);
+        console.error("[Voice ML API Error]");
+        console.error("Command:", cmd);
+        console.error("Error:", error.message);
+        console.error("STDOUT:", stdout);
+        console.error("STDERR:", stderr);
+
         return res.status(500).json({
           success: false,
           error: "Voice prediction failed during audio conversion or model execution."

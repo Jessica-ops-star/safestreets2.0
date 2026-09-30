@@ -62,23 +62,48 @@ export function formatNameForTTS(name) {
 
 /**
  * Generate TwiML XML using Twilio VoiceResponse helper.
- * Message: "Hello. This is Safe Streets calling with an emergency alert. [NAME] has triggered the SOS button and is currently in an emergency. Their last known location has been shared with you by email. Please check the email immediately."
+ * Supported languages: "en" (English), "ta" (Tamil), "hi" (Hindi).
  */
-export function generateTwimlMessage(userName) {
+export function generateTwimlMessage(userName, language = "en") {
   const response = new twilio.twiml.VoiceResponse();
   const rawName = (userName && String(userName).trim()) || "";
   const nameToUse = rawName ? formatNameForTTS(rawName) : "A user";
 
-  const message = `Hello. This is Safe Streets calling with an emergency alert. ${nameToUse} has triggered the SOS button and is currently in an emergency. Their last known location has been shared with you by email. Please check the email immediately.`;
+  const lang = (language && String(language).toLowerCase().trim()) || "en";
 
-  response.say({ voice: "alice" }, message);
+  let message = "";
+  let ttsLanguage = "en-IN";
+  let ttsVoice = "Polly.Aditi";
+
+  if (lang === "ta") {
+    ttsLanguage = "ta-IN";
+    ttsVoice = "Google.ta-IN-Standard-A";
+    message = `அவசர எச்சரிக்கை! ${nameToUse} ஆபத்தில் இருக்கிறார். Safe Streets SOS எச்சரிக்கையைப் பெற்றுள்ளது. தயவுசெய்து உடனடியாக அவரைத் தொடர்பு கொள்ளுங்கள்.`;
+  } else if (lang === "hi") {
+    ttsLanguage = "hi-IN";
+    ttsVoice = "Polly.Aditi";
+    message = `आपातकालीन चेतावनी! ${nameToUse} संकट में हैं। Safe Streets ने SOS अलर्ट प्राप्त किया है। कृपया तुरंत उनसे संपर्क करें।`;
+  } else {
+    ttsLanguage = "en-IN";
+    ttsVoice = "Polly.Aditi";
+    message = `Emergency Alert! ${nameToUse} is in danger. Safe Streets has received an SOS alert. Please contact them immediately.`;
+  }
+
+  console.log("\n================ TWIML GENERATION =================");
+  console.log("Selected Language   :", lang);
+  console.log("Twilio Language Tag :", ttsLanguage);
+  console.log("Selected Voice      :", ttsVoice);
+  console.log("Message Content     :", message);
+  console.log("===================================================\n");
+
+  response.say({ language: ttsLanguage, voice: ttsVoice }, message);
   return response.toString();
 }
 
 /**
  * Make an outbound SOS call via Twilio.
  */
-export async function callEmergencyContact(phoneNumber, userName = "A Safe Streets user", alertId = null, reqHost = null) {
+export async function callEmergencyContact(phoneNumber, userName = "A Safe Streets user", alertId = null, reqHost = null, language = "en") {
   if (!phoneNumber) {
     return {
       success: false,
@@ -101,6 +126,7 @@ export async function callEmergencyContact(phoneNumber, userName = "A Safe Stree
   const destinationNumber = formatPhoneForTwilio(phoneNumber);
   const rawName = (userName && String(userName).trim()) || "";
   const nameToUse = rawName ? formatNameForTTS(rawName) : "A Safe Streets user";
+  const cleanLang = (language && String(language).toLowerCase().trim()) || "en";
 
   try {
     const client = twilio(accountSid, authToken);
@@ -109,6 +135,7 @@ export async function callEmergencyContact(phoneNumber, userName = "A Safe Stree
     console.log("Destination :", destinationNumber);
     console.log("Twilio From :", twilioPhone);
     console.log("User Name   :", nameToUse);
+    console.log("Language    :", cleanLang);
     console.log("Alert ID    :", alertId || "N/A");
     console.log("===============================================\n");
 
@@ -125,6 +152,7 @@ export async function callEmergencyContact(phoneNumber, userName = "A Safe Stree
       const params = new URLSearchParams();
       if (alertId) params.append("alertId", alertId);
       if (rawName) params.append("name", rawName);
+      params.append("language", cleanLang);
       callOptions.url = `${cleanBase}/api/twilio/voice?${params.toString()}`;
       console.log(`[Twilio Voice] Outbound call webhook URL: ${callOptions.url}`);
     } else if (process.env.TWILIO_VOICE_URL) {
@@ -133,7 +161,7 @@ export async function callEmergencyContact(phoneNumber, userName = "A Safe Stree
     } else {
       // Local development fallback: pass dynamic TwiML via Twimlet echo URL for trial account compatibility
       console.log("[Twilio Voice] Local environment: rendering dynamic TwiML via Twimlet echo URL.");
-      const twimlXml = generateTwimlMessage(userName);
+      const twimlXml = generateTwimlMessage(userName, cleanLang);
       callOptions.url = `http://twimlets.com/echo?Twiml=${encodeURIComponent(twimlXml)}`;
     }
 

@@ -58,6 +58,23 @@ async function resolveAuthenticatedUserId(req) {
   return req.body?.userId || req.body?.user_id || null;
 }
 
+function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+    Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) ** 2;
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
 // ─────────────────────────────────────────────────────────────
 // GET /api/hello — Health check
 // ─────────────────────────────────────────────────────────────
@@ -96,6 +113,9 @@ app.post("/api/hardware/sos", async (req, res) => {
         error: "Supabase is not configured."
       });
     }
+
+
+    // Update user's current location
 
     // ---------------------------------------------------------
     // Get data from ESP32
@@ -370,7 +390,7 @@ app.post("/api/sos", async (req, res) => {
     // ── Step 3: Query emergency_contacts table for this user ───────────────
     const { data: emergencyContacts, error: contactError } = await supabase
       .from("emergency_contacts")
-      .select("id, full_name, number, relationship, email")
+      .select("id, full_name, number, relationship, email, preferred_language, is_primary")
       .eq("user_id", userId);
 
     if (contactError) {
@@ -424,6 +444,88 @@ app.post("/api/sos", async (req, res) => {
     const address = locationRows[0].address || "Location stored";
 
     console.log(`[SOS] Step 6 ✔ Location: ${latitude}, ${longitude} — ${address}`);
+
+    // ==========================================
+    // FIND NEARBY SAFE STREETS USERS
+    // ==========================================
+
+    let nearbyUsers = [];
+
+    if (!locError && locationRows?.length > 0) {
+      const sosLatitude = Number(locationRows[0].latitude);
+      const sosLongitude = Number(locationRows[0].longitude);
+
+      const { data: allLocations, error: nearbyError } = await supabase
+        .from("user_locations")
+        .select("user_id, latitude, longitude, updated_at")
+        .neq("user_id", userId);
+
+      if (nearbyError) {
+        console.error("[Nearby Users Error]", nearbyError);
+      } else if (allLocations) {
+        nearbyUsers = allLocations
+          .map((location) => {
+            const distance = calculateDistanceKm(
+              sosLatitude,
+              sosLongitude,
+              Number(location.latitude),
+              Number(location.longitude)
+            );
+
+            return {
+              ...location,
+              distance
+            };
+          })
+          .filter((location) => location.distance <= 2);
+      }
+
+      console.log("🚨 SOS Location:", sosLatitude, sosLongitude);
+      console.log("📍 Nearby Safe Streets users:", nearbyUsers);
+    }
+
+    // ============================================================
+    // CREATE NOTIFICATIONS FOR NEARBY USERS
+    // ============================================================
+
+    if (nearbyUsers.length > 0) {
+
+      const notifications = nearbyUsers.map((user) => ({
+        user_id: user.user_id,
+        type: "SOS_NEARBY",
+        title: "🚨 SOS ALERT NEAR YOU",
+        message: "A Safe Streets user near you has triggered an emergency alert.",
+        latitude: latitude,
+        longitude: longitude,
+        is_read: false
+      }));
+
+      const { data: createdNotifications, error: notificationError } =
+        await supabase
+          .from("notifications")
+          .insert(notifications)
+          .select();
+
+      if (notificationError) {
+
+        console.error(
+          "[SOS] Nearby notification error:",
+          notificationError.message
+        );
+
+      } else {
+
+        console.log(
+          `🚨 Created ${createdNotifications.length} nearby SOS notification(s)`
+        );
+
+      }
+
+    } else {
+
+      console.log("📍 No Safe Streets users found within 2 km.");
+
+    }
 
     // ── Step 7: Create record in sos_alerts (permanent snapshot) ──────────
     const now = new Date().toISOString();
@@ -487,8 +589,9 @@ app.post("/api/sos", async (req, res) => {
 
     for (const contact of sortedContacts) {
       if (!contact.number) continue;
-      console.log(`[SOS] Step 9 — Attempting Twilio call to: ${contact.full_name || "Contact"} (${contact.number}) for user: ${sosUserName}`);
-      const tResult = await callEmergencyContactTwilio(contact.number, sosUserName, createdAlert?.id, requestHost);
+      const contactLang = contact.preferred_language || "en";
+      console.log(`[SOS] Step 9 — Attempting Twilio call (Lang: ${contactLang}) to: ${contact.full_name || "Contact"} (${contact.number}) for user: ${sosUserName}`);
+      const tResult = await callEmergencyContactTwilio(contact.number, sosUserName, createdAlert?.id, requestHost, contactLang);
       twilioResult = tResult;
       dispatchedContact = contact;
 
@@ -499,7 +602,7 @@ app.post("/api/sos", async (req, res) => {
         break;
       } else {
         console.warn(`[SOS] Step 9 ✘ Twilio call to ${contact.full_name} (${contact.number}) notice: ${tResult.error}`);
-        
+
         // Attempt Exotel voice call fallback if Twilio fails
         console.log(`[SOS] Step 9 — Attempting Exotel call fallback to: ${contact.full_name || "Contact"} (${contact.number})...`);
         const eResult = await callEmergencyContactExotel(contact.number);
@@ -529,7 +632,8 @@ app.post("/api/sos", async (req, res) => {
       emergencyContact: {
         full_name: dispatchedContact.full_name,
         number: dispatchedContact.number,
-        relationship: dispatchedContact.relationship
+        relationship: dispatchedContact.relationship,
+        preferred_language: dispatchedContact.preferred_language || "en"
       },
       alert: createdAlert,
       location: { latitude, longitude, address },
@@ -553,9 +657,17 @@ app.post("/api/sos", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.all("/api/twilio/voice", async (req, res) => {
   try {
+    console.log("===== TWILIO WEBHOOK RECEIVED =====");
+    console.log("Method:", req.method);
+    console.log("Query:", req.query);
+    console.log("Body:", req.body);
+
     const alertId = req.query.alertId || req.body?.alertId || req.query.alert_id || req.body?.alert_id;
     const userId = req.query.userId || req.body?.userId || req.query.user_id || req.body?.user_id;
     let userName = req.query.name || req.body?.name || req.query.userName || req.body?.userName;
+    const language = req.query.language || req.body?.language || req.query.lang || req.body?.lang || "en";
+
+    console.log("Language received:", language);
 
     // Retrieve user's full_name from Supabase database if not directly passed in parameters
     if (!userName && alertId && supabase) {
@@ -588,13 +700,16 @@ app.all("/api/twilio/voice", async (req, res) => {
       }
     }
 
-    console.log(`[Twilio TwiML] Generating dynamic TwiML for user: "${userName || "Unknown User"}" (Alert ID: ${alertId || "N/A"})`);
+    console.log(`[Twilio TwiML] Generating dynamic TwiML for user: "${userName || "Unknown User"}" (Lang: ${language}, Alert ID: ${alertId || "N/A"})`);
 
-    const twimlXml = generateTwimlMessage(userName);
+    const twimlXml = generateTwimlMessage(userName, language);
+    console.log("Generated TwiML:", twimlXml);
+
     res.type("text/xml").send(twimlXml);
   } catch (err) {
     console.error("[Twilio TwiML] Error generating TwiML:", err.message);
-    const twimlXml = generateTwimlMessage(null);
+    const twimlXml = generateTwimlMessage(null, "en");
+    console.log("Generated Fallback TwiML:", twimlXml);
     res.type("text/xml").send(twimlXml);
   }
 });
@@ -606,6 +721,7 @@ app.post("/api/sos/call", async (req, res) => {
   try {
     const targetPhone = req.body?.emergencyNumber || req.body?.phoneNumber || req.body?.phone || req.body?.userNumber;
     const userName = req.body?.userName || req.body?.name || "Test User";
+    const language = req.body?.language || req.body?.lang || req.query?.language || "en";
 
     if (!targetPhone) {
       return res.status(400).json({
@@ -615,7 +731,7 @@ app.post("/api/sos/call", async (req, res) => {
     }
 
     const requestHost = req.get("host");
-    const result = await callEmergencyContactTwilio(targetPhone, userName, null, requestHost);
+    const result = await callEmergencyContactTwilio(targetPhone, userName, null, requestHost, language);
     return res.json(result);
   } catch (err) {
     console.error("[Twilio Direct Call] Error:", err.message);
@@ -637,8 +753,12 @@ app.post("/api/predict-voice", async (req, res) => {
       });
     }
 
-    // Strip Base64 data URL header if present
-    const base64Clean = audioData.replace(/^data:audio\/\w+;base64,/, "").replace(/^data:application\/\w+;base64,/, "");
+    // Robust Base64 data-URL extraction (handles ;codecs=opus and other MIME parameters)
+    let base64Clean = audioData;
+    if (typeof base64Clean === "string" && base64Clean.includes(",")) {
+      base64Clean = base64Clean.substring(base64Clean.indexOf(",") + 1);
+    }
+
     const buffer = Buffer.from(base64Clean, "base64");
 
     if (!buffer || buffer.length === 0) {
@@ -647,6 +767,12 @@ app.post("/api/predict-voice", async (req, res) => {
         error: "Invalid or empty audio buffer."
       });
     }
+
+    console.log("[Voice ML] Received audio data URL:", {
+      prefix: typeof audioData === "string" ? audioData.substring(0, 80) : typeof audioData,
+      base64Length: base64Clean.length,
+      bufferLength: buffer.length
+    });
 
     // Write temp input file
     const scratchDir = path.join(__dirname, "scratch");
@@ -657,6 +783,11 @@ app.post("/api/predict-voice", async (req, res) => {
     const tempFileName = `temp_voice_${crypto.randomBytes(6).toString("hex")}.webm`;
     const tempFilePath = path.join(scratchDir, tempFileName);
     fs.writeFileSync(tempFilePath, buffer);
+
+    console.log("[Voice ML] Temporary WebM file:", {
+      path: tempFilePath,
+      size: fs.statSync(tempFilePath).size
+    });
 
     // server.js is already in the project root
     const rootDir = __dirname;
@@ -703,6 +834,63 @@ app.post("/api/predict-voice", async (req, res) => {
   }
 });
 
+app.post("/api/location/update", async (req, res) => {
+  try {
+    const { userId, latitude, longitude } = req.body;
+
+    if (!userId || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "userId, latitude and longitude are required"
+      });
+    }
+
+    const { data, error } = await supabase
+      .from("user_locations")
+      .upsert(
+        {
+          user_id: userId,
+          latitude: Number(latitude),
+          longitude: Number(longitude),
+          updated_at: new Date().toISOString()
+        },
+        {
+          onConflict: "user_id"
+        }
+      )
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[Location Update Error]", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update location",
+        error: error.message
+      });
+    }
+
+    console.log(
+      `📍 Location updated: ${userId} → ${latitude}, ${longitude}`
+    );
+
+    res.json({
+      success: true,
+      message: "Location updated",
+      location: data
+    });
+
+  } catch (error) {
+    console.error("[Location Update]", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────
 // 404 — API routes only
 // ─────────────────────────────────────────────────────────────
@@ -713,12 +901,15 @@ app.use((req, res, next) => {
   next();
 });
 
+
+
 // ─────────────────────────────────────────────────────────────
 // SPA fallback (React / Vite)
 // ─────────────────────────────────────────────────────────────
 app.get("/{*splat}", (req, res) => {
   res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
+
 
 // ─────────────────────────────────────────────────────────────
 // Global Error Handler
@@ -735,6 +926,8 @@ app.use((err, req, res, next) => {
 // Start Server
 // ─────────────────────────────────────────────────────────────
 const port = process.env.PORT || 3000;
+
+
 
 app.listen(port, '0.0.0.0', () => {
   console.log(`✅ Safe Streets server running on port ${port}`);

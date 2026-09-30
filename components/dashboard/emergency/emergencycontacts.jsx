@@ -15,18 +15,22 @@ import {
   Trash2,
   UserPlus,
   Star,
-  AlertTriangle
+  AlertTriangle,
+  Pencil,
+  Globe
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function EmergencyContacts({ contacts, loading, onContactsChange }) {
   const [showAddForm, setShowAddForm] = useState(false);
   const [contactToDelete, setContactToDelete] = useState(null);
+  const [editingContact, setEditingContact] = useState(null);
   const [newContact, setNewContact] = useState({
     name: "",
     phone: "",
     email: "",
     relationship: "",
+    preferred_language: "en",
     is_primary: false,
     notify_sms: true,
     notify_email: true
@@ -44,7 +48,8 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
         phone,
         full_name: name,
         number: phone,
-        relationship: newContact.relationship || "other"
+        relationship: newContact.relationship || "other",
+        preferred_language: newContact.preferred_language || "en"
       };
       await EmergencyContact.create(contactToSave);
       EmergencyContact.clearCache();
@@ -53,6 +58,7 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
         phone: "",
         email: "",
         relationship: "",
+        preferred_language: "en",
         is_primary: false,
         notify_sms: true,
         notify_email: true
@@ -63,6 +69,45 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
       }
     } catch (error) {
       console.error("Error adding contact:", error);
+    }
+  };
+
+  const handleStartEdit = (contact) => {
+    setEditingContact({
+      id: contact.id,
+      name: contact.name || contact.full_name || "",
+      phone: contact.phone || contact.number || "",
+      email: contact.email || "",
+      relationship: contact.relationship || "other",
+      preferred_language: contact.preferred_language || "en",
+      is_primary: contact.is_primary || false
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingContact) return;
+    const name = editingContact.name?.trim();
+    const phone = editingContact.phone?.trim();
+    if (!name || !phone) return;
+
+    try {
+      const contactToUpdate = {
+        name,
+        phone,
+        full_name: name,
+        number: phone,
+        email: editingContact.email?.trim() || "",
+        relationship: editingContact.relationship || "other",
+        preferred_language: editingContact.preferred_language || "en"
+      };
+      await EmergencyContact.update(editingContact.id, contactToUpdate);
+      EmergencyContact.clearCache();
+      setEditingContact(null);
+      if (onContactsChange) {
+        await onContactsChange();
+      }
+    } catch (error) {
+      console.error("Error updating contact:", error);
     }
   };
 
@@ -154,7 +199,7 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
                     placeholder="Enter email address"
                   />
                 </div>
-                <div className="md:col-span-2">
+                <div>
                   <Label htmlFor="relationship">Relationship</Label>
                   <Select
                     value={newContact.relationship}
@@ -171,6 +216,22 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
                       <SelectItem value="neighbor">Neighbor</SelectItem>
                       <SelectItem value="doctor">Doctor</SelectItem>
                       <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="add-language">Preferred Alert Language</Label>
+                  <Select
+                    value={newContact.preferred_language || "en"}
+                    onValueChange={(value) => setNewContact({...newContact, preferred_language: value})}
+                  >
+                    <SelectTrigger id="add-language">
+                      <SelectValue placeholder="Select language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="ta">Tamil</SelectItem>
+                      <SelectItem value="hi">Hindi</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -231,6 +292,10 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
                           <Badge variant="outline" className="capitalize">
                             {contact.relationship}
                           </Badge>
+                          <Badge variant="outline" className="text-slate-600 border-slate-200 gap-1 bg-slate-50">
+                            <Globe className="w-3 h-3 text-slate-400" />
+                            {contact.preferred_language === "ta" ? "Tamil" : contact.preferred_language === "hi" ? "Hindi" : "English"}
+                          </Badge>
                         </div>
                         <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600 mt-1">
                           <span className="flex items-center gap-1">
@@ -255,11 +320,20 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
                       </div>
                     </div>
                     <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleStartEdit(contact)}
+                        title="Edit Contact"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
                       {!contact.is_primary && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => handleSetPrimary(contact.id)}
+                          title="Set as Primary"
                         >
                           <Star className="w-4 h-4" />
                         </Button>
@@ -269,6 +343,7 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
                         size="sm"
                         onClick={() => setContactToDelete(contact)}
                         className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        title="Delete Contact"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -280,6 +355,115 @@ export default function EmergencyContacts({ contacts, loading, onContactsChange 
           )}
         </CardContent>
       </Card>
+
+      {/* Edit Contact Modal */}
+      <AnimatePresence>
+        {editingContact && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-100 space-y-4"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <h3 className="font-bold text-lg text-slate-900">Edit Emergency Contact</h3>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setEditingContact(null)}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  ✕
+                </Button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <Label htmlFor="edit-name">Full Name</Label>
+                  <Input
+                    id="edit-name"
+                    value={editingContact.name}
+                    onChange={(e) => setEditingContact({ ...editingContact, name: e.target.value })}
+                    placeholder="Enter full name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-phone">Phone Number</Label>
+                  <Input
+                    id="edit-phone"
+                    value={editingContact.phone}
+                    onChange={(e) => setEditingContact({ ...editingContact, phone: e.target.value })}
+                    placeholder="Enter phone number"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-email">Email Address</Label>
+                  <Input
+                    id="edit-email"
+                    type="email"
+                    value={editingContact.email}
+                    onChange={(e) => setEditingContact({ ...editingContact, email: e.target.value })}
+                    placeholder="Enter email address"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-relationship">Relationship</Label>
+                  <Select
+                    value={editingContact.relationship}
+                    onValueChange={(value) => setEditingContact({ ...editingContact, relationship: value })}
+                  >
+                    <SelectTrigger id="edit-relationship">
+                      <SelectValue placeholder="Select relationship" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="family">Family</SelectItem>
+                      <SelectItem value="friend">Friend</SelectItem>
+                      <SelectItem value="partner">Partner</SelectItem>
+                      <SelectItem value="colleague">Colleague</SelectItem>
+                      <SelectItem value="neighbor">Neighbor</SelectItem>
+                      <SelectItem value="doctor">Doctor</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="edit-language">Preferred Alert Language</Label>
+                  <Select
+                    value={editingContact.preferred_language || "en"}
+                    onValueChange={(value) => setEditingContact({ ...editingContact, preferred_language: value })}
+                  >
+                    <SelectTrigger id="edit-language">
+                      <SelectValue placeholder="Select language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="ta">Tamil</SelectItem>
+                      <SelectItem value="hi">Hindi</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-3 justify-end border-t border-slate-100">
+                <Button
+                  variant="outline"
+                  onClick={() => setEditingContact(null)}
+                  className="border-slate-200 hover:bg-slate-100"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveEdit}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-md shadow-blue-200"
+                >
+                  Save Changes
+                </Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Confirmation Modal */}
       <AnimatePresence>

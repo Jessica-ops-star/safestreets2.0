@@ -88,6 +88,7 @@ export function VoiceActivation({ isListening: externalIsListening, onToggleList
     setErrorMessage("");
 
     const stream = streamToUse || mediaStreamRef.current;
+
     if (!stream || !stream.active) {
       void requestMicrophonePermission();
       return;
@@ -95,10 +96,13 @@ export function VoiceActivation({ isListening: externalIsListening, onToggleList
 
     setMicActive(true);
     setStatusState("Listening...");
-    if (onToggleListening) onToggleListening(true);
 
-    // Capture ~1 second audio slices periodically
+    if (onToggleListening) {
+      onToggleListening(true);
+    }
+
     recordAndPredictAudioSlice(stream);
+
     recordingIntervalRef.current = setInterval(() => {
       if (!isProcessingRef.current) {
         recordAndPredictAudioSlice(stream);
@@ -110,43 +114,87 @@ export function VoiceActivation({ isListening: externalIsListening, onToggleList
     if (!stream || !stream.active || isProcessingRef.current) return;
 
     try {
-      const options = MediaRecorder.isTypeSupported("audio/webm")
-        ? { mimeType: "audio/webm" }
-        : MediaRecorder.isTypeSupported("audio/ogg")
-        ? { mimeType: "audio/ogg" }
-        : {};
+      let mimeType = "";
+
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+        mimeType = "audio/webm;codecs=opus";
+      } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+        mimeType = "audio/webm";
+      } else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
+        mimeType = "audio/ogg;codecs=opus";
+      }
+
+      const options = mimeType ? { mimeType } : {};
 
       const recorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = recorder;
+
       const chunks = [];
 
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunks.push(e.data);
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
         }
       };
 
+      recorder.onerror = (event) => {
+        console.error("[Voice Recorder] MediaRecorder error:", event.error);
+      };
+
       recorder.onstop = async () => {
-        if (chunks.length === 0) return;
-        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        if (chunks.length === 0) {
+          console.warn("[Voice Recorder] No audio chunks received.");
+          return;
+        }
+
+        const finalMimeType =
+          recorder.mimeType ||
+          mimeType ||
+          "audio/webm";
+
+        const blob = new Blob(chunks, {
+          type: finalMimeType
+        });
+
+        console.log(
+          `[Voice Recorder] Complete audio sample: ${blob.size} bytes, type=${finalMimeType}`
+        );
+
+        if (blob.size < 1000) {
+          console.warn(
+            `[Voice Recorder] Audio sample too small: ${blob.size} bytes`
+          );
+          return;
+        }
+
         await sendAudioToBackend(blob);
       };
 
       recorder.start();
+
       setStatusState("Listening...");
 
-      // Stop slice recording after 1000ms (1 second duration expected by PyTorch model)
+      // Record slightly longer than exactly 1 second so the container
+      // can be finalized cleanly before FFmpeg processes it.
       setTimeout(() => {
         if (recorder.state === "recording") {
           try {
             recorder.stop();
-          } catch (e) {
-            console.warn("Error stopping 1s recorder slice:", e);
+          } catch (error) {
+            console.warn(
+              "[Voice Recorder] Error stopping recorder:",
+              error
+            );
           }
         }
-      }, 1000);
-    } catch (err) {
-      console.warn("Error initializing MediaRecorder slice:", err);
+      }, 1200);
+
+    } catch (error) {
+      console.error(
+        "[Voice Recorder] Error initializing MediaRecorder:",
+        error
+      );
+
       setErrorMessage("Unable to record audio clip for prediction.");
     }
   };

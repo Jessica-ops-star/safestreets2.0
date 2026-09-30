@@ -361,6 +361,7 @@ export const EmergencyContact = {
 							phone: item.number || item.phone || '',
 							email: item.email || '',
 							relationship: item.relationship || 'other',
+							preferred_language: item.preferred_language || 'en',
 							is_primary: item.is_primary ?? false,
 							notify_sms: item.notify_sms ?? true,
 							notify_email: item.notify_email ?? true,
@@ -393,6 +394,7 @@ export const EmergencyContact = {
 		const phoneNumber = data.number || data.phone || '';
 		const email = data.email || '';
 		const relationship = data.relationship || 'other';
+		const preferredLanguage = data.preferred_language || 'en';
 
 		let newContactItem = {
 			id: generateId('contact'),
@@ -403,6 +405,7 @@ export const EmergencyContact = {
 			phone: phoneNumber,
 			email: email,
 			relationship: relationship,
+			preferred_language: preferredLanguage,
 			is_primary: data.is_primary ?? false,
 			notify_sms: data.notify_sms ?? true,
 			notify_email: data.notify_email ?? true,
@@ -416,7 +419,8 @@ export const EmergencyContact = {
 					full_name: fullName,
 					number: phoneNumber,
 					email: email,
-					relationship: relationship
+					relationship: relationship,
+					preferred_language: preferredLanguage
 				};
 
 				const { data: inserted, error } = await supabase
@@ -436,6 +440,7 @@ export const EmergencyContact = {
 						phone: inserted.number || phoneNumber,
 						email: inserted.email || email,
 						relationship: inserted.relationship || relationship,
+						preferred_language: inserted.preferred_language || preferredLanguage,
 						created_at: inserted.created_at || newContactItem.created_at
 					};
 				} else if (error) {
@@ -459,6 +464,7 @@ export const EmergencyContact = {
 		const email = updates.email;
 		const relationship = updates.relationship;
 		const isPrimary = updates.is_primary;
+		const preferredLanguage = updates.preferred_language;
 
 		if (userId && id) {
 			try {
@@ -468,6 +474,7 @@ export const EmergencyContact = {
 				if (email !== undefined) payload.email = email;
 				if (relationship !== undefined) payload.relationship = relationship;
 				if (isPrimary !== undefined) payload.is_primary = isPrimary;
+				if (preferredLanguage !== undefined) payload.preferred_language = preferredLanguage;
 
 				if (Object.keys(payload).length > 0) {
 					const { error } = await supabase

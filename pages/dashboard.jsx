@@ -7,11 +7,11 @@ import { Card, CardContent } from "@/components/ui/card.jsx";
 import { Badge } from "@/components/ui/badge.jsx";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/utils";
-import { 
-  Shield, 
-  AlertTriangle, 
-  Navigation, 
-  Users, 
+import {
+  Shield,
+  AlertTriangle,
+  Navigation,
+  Users,
   MapPin,
   Clock,
   CheckCircle,
@@ -24,9 +24,11 @@ import {
   Compass,
   AlertCircle,
   LocateFixed,
-  Loader2
+  Loader2,
+  X,
+  ExternalLink
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 
 import QuickActions from "../components/dashboard/QuickActions.jsx";
 import SafetyMetrics from "../components/dashboard/safemetrics.jsx";
@@ -44,6 +46,8 @@ export default function Dashboard() {
     startTracking,
     stopTracking
   } = useLocationTracking();
+
+  const [nearbySosNotification, setNearbySosNotification] = useState(null);
 
   const [stats, setStats] = useState({
     totalAlerts: 0,
@@ -101,12 +105,117 @@ export default function Dashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    let notificationChannel = null;
+
+    const setupNotificationListener = async () => {
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        if (userError || !user) return;
+
+        notificationChannel = supabase
+          .channel(`user-notifications-${user.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'notifications',
+              filter: `user_id=eq.${user.id}`
+            },
+            (payload) => {
+              console.log("🚨 Realtime notification received:", payload.new);
+              setNearbySosNotification(payload.new);
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.error("Error setting up notification realtime listener:", err);
+      }
+    };
+
+    setupNotificationListener();
+
+    return () => {
+      if (notificationChannel) {
+        supabase.removeChannel(notificationChannel);
+      }
+    };
+  }, []);
+
   return (
-    <div className="space-y-12">
+    <div className="space-y-12 relative">
+      {/* Realtime Nearby SOS Emergency Alert Notification Banner */}
+      <AnimatePresence>
+        {nearbySosNotification && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className="fixed top-6 right-6 z-50 max-w-md w-full bg-slate-900/95 border-2 border-red-500/80 text-white rounded-2xl p-5 shadow-2xl backdrop-blur-xl ring-4 ring-red-500/20"
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-red-500/20 border border-red-500/50 flex items-center justify-center text-red-500 shrink-0 animate-pulse">
+                  <AlertTriangle className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-base text-red-400 flex items-center gap-1.5 leading-tight">
+                    🚨 SOS ALERT NEAR YOU
+                  </h4>
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                    Emergency Broadcast • Within 2 km
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setNearbySosNotification(null)}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors"
+                aria-label="Dismiss notification"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-sm text-slate-200 mb-4 leading-relaxed bg-slate-800/80 p-3 rounded-xl border border-slate-700/60 font-medium">
+              {nearbySosNotification.message || "A Safe Streets user near you has triggered an emergency alert."}
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setNearbySosNotification(null)}
+                className="border-slate-700 hover:bg-slate-800 text-slate-300 hover:text-white text-xs rounded-xl"
+              >
+                Dismiss
+              </Button>
+              {nearbySosNotification.latitude && nearbySosNotification.longitude && (
+                <Button
+                  size="sm"
+                  asChild
+                  className="bg-red-600 hover:bg-red-700 text-white font-semibold text-xs rounded-xl shadow-lg shadow-red-600/30 gap-1.5"
+                >
+                  <a
+                    href={`https://www.google.com/maps?q=${nearbySosNotification.latitude},${nearbySosNotification.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    View Location
+                    <ExternalLink className="w-3 h-3 opacity-70" />
+                  </a>
+                </Button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Dynamic Header Section */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-4 border-b border-slate-200/50">
         <div>
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             className="flex items-center gap-2 text-emerald-600 font-bold uppercase tracking-[0.2em] text-xs mb-3"
@@ -114,7 +223,7 @@ export default function Dashboard() {
             <Sparkles className="w-4 h-4 fill-emerald-500" />
             Security Intelligence
           </motion.div>
-          <motion.h1 
+          <motion.h1
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.1 }}
@@ -182,7 +291,7 @@ export default function Dashboard() {
               <div className="text-xs font-semibold text-emerald-300">
                 {lastSavedAt ? new Date(lastSavedAt).toLocaleTimeString() : "Syncing..."}
               </div>
-              
+
               <div className="flex items-center gap-2 mt-1">
                 {locationLoading ? (
                   <Button
@@ -227,13 +336,13 @@ export default function Dashboard() {
         </section>
 
         <div className="grid lg:grid-cols-2 gap-10">
-          <RecentActivity 
+          <RecentActivity
             title="Emergency Alerts"
             items={recentAlerts}
             type="alerts"
             loading={loading}
           />
-          <RecentActivity 
+          <RecentActivity
             title="Intelligence Reports"
             items={recentReports}
             type="reports"

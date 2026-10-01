@@ -124,8 +124,8 @@ def evaluate_real_world_dataset(
     # Calculate Evaluation Metrics
     acc = accuracy_score(y_true, y_pred)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
-    report_dict = classification_report(y_true, y_pred, target_names=target_names, output_dict=True, zero_division=0)
-    report_str = classification_report(y_true, y_pred, target_names=target_names, digits=4, zero_division=0)
+    report_dict = classification_report(y_true, y_pred, labels=[0, 1, 2, 3], target_names=target_names, output_dict=True, zero_division=0)
+    report_str = classification_report(y_true, y_pred, labels=[0, 1, 2, 3], target_names=target_names, digits=4, zero_division=0)
 
     print("\n" + "=" * 70)
     print("            REAL VOICE EVALUATION SUMMARY REPORT")

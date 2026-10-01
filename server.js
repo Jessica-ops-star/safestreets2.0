@@ -13,6 +13,12 @@ import { sendEmergencyEmail } from "./services/emailService.js";
 dotenv.config({ override: true });
 
 const app = express();
+
+let latestVoiceEvent = {
+  detected: false,
+  timestamp: 0
+};
+
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true }));
 
@@ -740,6 +746,37 @@ app.post("/api/sos/call", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/hardware/voice-status — ESP32 Voice Event Polling Endpoint
+// ─────────────────────────────────────────────────────────────
+app.get("/api/hardware/voice-status", (req, res) => {
+  const now = Date.now();
+
+  const valid =
+    latestVoiceEvent.detected &&
+    (now - latestVoiceEvent.timestamp <= 15000);
+
+  if (valid) {
+    const eventTimestamp = latestVoiceEvent.timestamp;
+
+    // Consume the event so it is not repeatedly detected
+    latestVoiceEvent.detected = false;
+
+    console.log("🎙️ ESP32 received VOICE HELP event");
+
+    return res.json({
+      success: true,
+      voiceDetected: true,
+      timestamp: eventTimestamp
+    });
+  }
+
+  return res.json({
+    success: true,
+    voiceDetected: false
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/predict-voice — PyTorch Voice ML Inference Endpoint
 // ─────────────────────────────────────────────────────────────
 app.post("/api/predict-voice", async (req, res) => {
@@ -816,6 +853,24 @@ app.post("/api/predict-voice", async (req, res) => {
 
       try {
         const result = JSON.parse(stdout.trim());
+
+        console.log("[Voice ML] Prediction:", result);
+
+        const predictedClass = result?.prediction || result?.predicted_class;
+        const confidenceScore = Number(result?.confidence || result?.confidence_pct || 0);
+
+        if (
+          predictedClass === "HELP" &&
+          confidenceScore > 0
+        ) {
+          latestVoiceEvent = {
+            detected: true,
+            timestamp: Date.now()
+          };
+
+          console.log("🚨 VOICE HELP EVENT STORED FOR ESP32");
+        }
+
         return res.json(result);
       } catch (parseErr) {
         console.error("[Voice ML Output Parse Error]:", stdout);

@@ -29,24 +29,32 @@
     ]
   },
   "dataset_split": {
-    "train_samples": 840,
+    "synthetic_help_train": 210,
+    "synthetic_help_val": 45,
+    "synthetic_help_test": 45,
+    "real_help_train": 12,
+    "real_help_val": 0,
+    "real_help_test": 0,
+    "real_help_oversample_factor": 25,
+    "effective_real_help_train_exposure": 300,
+    "total_train_samples": 852,
     "val_samples": 180,
     "test_samples": 180
   },
   "test_results": {
-    "test_loss": 0.3057079275449117,
-    "test_accuracy": 0.8833333333333333,
+    "test_loss": 0.284684556722641,
+    "test_accuracy": 0.8944444444444445,
     "classification_report": {
       "HELP": {
-        "precision": 0.8,
-        "recall": 0.8,
-        "f1-score": 0.8,
+        "precision": 0.7959183673469388,
+        "recall": 0.8666666666666667,
+        "f1-score": 0.8297872340425532,
         "support": 45.0
       },
       "UNKNOWN": {
-        "precision": 0.8,
-        "recall": 0.8,
-        "f1-score": 0.8,
+        "precision": 0.8536585365853658,
+        "recall": 0.7777777777777778,
+        "f1-score": 0.813953488372093,
         "support": 45.0
       },
       "NOISE": {
@@ -61,30 +69,30 @@
         "f1-score": 0.967741935483871,
         "support": 45.0
       },
-      "accuracy": 0.8833333333333333,
+      "accuracy": 0.8944444444444445,
       "macro avg": {
-        "precision": 0.884375,
-        "recall": 0.8833333333333333,
-        "f1-score": 0.8833147942157954,
+        "precision": 0.8967692259830762,
+        "recall": 0.8944444444444444,
+        "f1-score": 0.8942499748194569,
         "support": 180.0
       },
       "weighted avg": {
-        "precision": 0.884375,
-        "recall": 0.8833333333333333,
-        "f1-score": 0.8833147942157953,
+        "precision": 0.8967692259830762,
+        "recall": 0.8944444444444445,
+        "f1-score": 0.8942499748194569,
         "support": 180.0
       }
     },
     "confusion_matrix": [
       [
-        36,
-        9,
+        39,
+        6,
         0,
         0
       ],
       [
-        9,
-        36,
+        10,
+        35,
         0,
         0
       ],
@@ -102,10 +110,12 @@
       ]
     ],
     "help_safety_metrics": {
-      "help_true_positives": 36,
-      "help_false_negatives": 9,
-      "help_false_positives": 9,
-      "fp_unknown_as_help": 9,
+      "help_precision": 0.7959183673469388,
+      "help_recall": 0.8666666666666667,
+      "help_true_positives": 39,
+      "help_false_negatives": 6,
+      "help_false_positives": 10,
+      "fp_unknown_as_help": 10,
       "fp_noise_as_help": 0,
       "fp_silence_as_help": 0
     }

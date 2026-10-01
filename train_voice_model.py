@@ -76,11 +76,10 @@ def main():
 
     # 1. Device selection
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using compute device: {device}")
+    print(f"Using compute device: {device}\n")
 
     # 2. Load dataset splits
-    dataset_dir = r"d:\SafeStreets\safestreets_dataset"
-    (train_paths, train_labels), (val_paths, val_labels), (test_paths, test_labels) = get_stratified_dataset_splits(dataset_dir)
+    (train_paths, train_labels), (val_paths, val_labels), (test_paths, test_labels), counts_info = get_stratified_dataset_splits()
 
     train_dataset = SafeStreetsDataset(train_paths, train_labels, is_train=True)
     val_dataset = SafeStreetsDataset(val_paths, val_labels, is_train=False)
@@ -97,22 +96,29 @@ def main():
     print(f"Model Architecture: SafeStreetsVoiceNet")
     print(f"Total Trainable Parameters: {param_count:,}\n")
 
-    # 4. Loss & Optimizer (Apply slight extra penalty weight on HELP class to minimize false negatives)
+    # 4. Loss & Optimizer (Slight penalty weight on HELP class)
     class_weights = torch.tensor([1.2, 1.0, 1.0, 1.0], dtype=torch.float32).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
-    # 5. Training Loop
+    # 5. Model Output Paths
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    model_save_path = os.path.join(base_dir, "voice_model.pth")
+    metadata_save_path = os.path.join(base_dir, "model_metadata.json")
+
+    parent_dir = r"d:\SafeStreets"
+    parent_model_path = os.path.join(parent_dir, "voice_model.pth")
+    parent_metadata_path = os.path.join(parent_dir, "model_metadata.json")
+
+    # 6. Training Loop
     epochs = 30
     best_val_loss = float('inf')
     best_val_acc = 0.0
-    model_save_path = r"d:\SafeStreets\voice_model.pth"
-    metadata_save_path = r"d:\SafeStreets\model_metadata.json"
 
     print("Beginning Training Loop...")
     print("-" * 60)
-    
+
     training_history = []
     start_time = time.time()
 
@@ -120,7 +126,7 @@ def main():
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc, _, _ = evaluate_model(model, val_loader, criterion, device)
-        
+
         scheduler.step(val_loss)
         elapsed = time.time() - t0
 
@@ -141,66 +147,72 @@ def main():
             best_val_loss = val_loss
             best_val_acc = val_acc
             torch.save(model.state_dict(), model_save_path)
+            if os.path.exists(parent_dir) and os.path.abspath(parent_dir) != os.path.abspath(base_dir):
+                try: torch.save(model.state_dict(), parent_model_path)
+                except Exception: pass
             print(f"  --> Best model saved to {model_save_path} (Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%)")
 
     total_training_time = time.time() - start_time
     print("-" * 60)
     print(f"Training Complete in {total_training_time:.2f} seconds.")
 
-    # 6. Test Set Evaluation
-    print("\nLoading Best Model Checkpoint for Test Set Evaluation...")
+    # 7. Test Set Evaluation
+    print("\nLoading Best Model Checkpoint for Standard Test Set Evaluation...")
     model.load_state_dict(torch.load(model_save_path))
     test_loss, test_acc, y_true, y_pred = evaluate_model(model, test_loader, criterion, device)
-
-    print("\n" + "=" * 60)
-    print("                  TEST SET EVALUATION RESULTS")
-    print("=" * 60)
-    print(f"Test Loss    : {test_loss:.4f}")
-    print(f"Test Accuracy: {test_acc * 100:.2f}%\n")
 
     # Metrics per class
     target_names = ["HELP", "UNKNOWN", "NOISE", "SILENCE"]
     report_dict = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
     report_str = classification_report(y_true, y_pred, target_names=target_names, digits=4)
-    
+
+    cm = confusion_matrix(y_true, y_pred)
+
+    help_idx = 0
+    help_actual_total = cm[help_idx].sum()
+    help_true_positives = cm[help_idx][help_idx]
+    help_false_negatives = help_actual_total - help_true_positives
+
+    fp_unknown_as_help = cm[1][0]
+    fp_noise_as_help = cm[2][0]
+    fp_silence_as_help = cm[3][0]
+    total_help_false_positives = fp_unknown_as_help + fp_noise_as_help + fp_silence_as_help
+
+    help_precision = report_dict["HELP"]["precision"]
+    help_recall = report_dict["HELP"]["recall"]
+
+    print("\n" + "=" * 60)
+    print("                  STANDARD TEST SET EVALUATION SUMMARY")
+    print("=" * 60)
+    print(f"Standard Test Accuracy : {test_acc * 100:.2f}%")
+    print(f"HELP Precision         : {help_precision * 100:.2f}%")
+    print(f"HELP Recall            : {help_recall * 100:.2f}%")
+    print(f"HELP False Negatives   : {help_false_negatives}/{help_actual_total}")
+    print(f"HELP False Positives   : {total_help_false_positives}")
+    print("-" * 60)
+
     print("Classification Report:")
     print(report_str)
 
-    # Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred)
     print("\nConfusion Matrix:")
     print("                 Predicted")
     print("                 HELP  UNKNOWN  NOISE  SILENCE")
     for idx, row in enumerate(cm):
         print(f"Actual {target_names[idx]:<8}: {row[0]:<5} {row[1]:<8} {row[2]:<6} {row[3]:<7}")
 
-    # Analyze HELP False Positives and False Negatives
-    help_idx = 0
-    help_actual_total = cm[help_idx].sum()
-    help_true_positives = cm[help_idx][help_idx]
-    help_false_negatives = help_actual_total - help_true_positives
-
-    # False Positives for HELP: UNKNOWN, NOISE, SILENCE wrongly classified as HELP
-    fp_unknown_as_help = cm[1][0]
-    fp_noise_as_help = cm[2][0]
-    fp_silence_as_help = cm[3][0]
-    total_help_false_positives = fp_unknown_as_help + fp_noise_as_help + fp_silence_as_help
-
     print("\n" + "-" * 60)
     print("            HELP CLASS SAFETY AUDIT & CRITICAL METRICS")
     print("-" * 60)
     print(f"Actual HELP Samples in Test Set: {help_actual_total}")
-    print(f"Correctly Triggered HELP (True Positives) : {help_true_positives}/{help_actual_total} ({help_true_positives/help_actual_total*100:.2f}%)")
+    print(f"Correctly Triggered HELP (True Positives) : {help_true_positives}/{help_actual_total} ({help_true_positives/max(1, help_actual_total)*100:.2f}%)")
     print(f"Missed HELP Emergencies (False Negatives)  : {help_false_negatives}/{help_actual_total}")
     print(f"Total False HELP Triggers (False Positives): {total_help_false_positives}")
     print(f"  - Normal Speech (UNKNOWN) -> HELP False Alarms: {fp_unknown_as_help}")
     print(f"  - Background Noise        -> HELP False Alarms: {fp_noise_as_help}")
     print(f"  - Silence                 -> HELP False Alarms: {fp_silence_as_help}")
 
-    # Calculate actual model file size
     model_file_size_kb = os.path.getsize(model_save_path) / 1024.0
 
-    # 7. Save Model Metadata JSON
     metadata = {
         "model_name": "SafeStreetsVoiceNet",
         "num_classes": 4,
@@ -217,17 +229,15 @@ def main():
             "hop_length": 160,
             "feature_shape": [1, 64, 101]
         },
-        "dataset_split": {
-            "train_samples": len(train_paths),
-            "val_samples": len(val_paths),
-            "test_samples": len(test_paths)
-        },
+        "dataset_split": counts_info,
         "test_results": {
             "test_loss": float(test_loss),
             "test_accuracy": float(test_acc),
             "classification_report": report_dict,
             "confusion_matrix": cm.tolist(),
             "help_safety_metrics": {
+                "help_precision": float(help_precision),
+                "help_recall": float(help_recall),
                 "help_true_positives": int(help_true_positives),
                 "help_false_negatives": int(help_false_negatives),
                 "help_false_positives": int(total_help_false_positives),
@@ -241,6 +251,13 @@ def main():
     with open(metadata_save_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
+    if os.path.exists(parent_dir) and os.path.abspath(parent_dir) != os.path.abspath(base_dir):
+        try:
+            with open(parent_metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except Exception:
+            pass
+
     print(f"\nSaved metadata JSON to: {metadata_save_path}")
     print(f"Model file size on disk: {model_file_size_kb:.2f} KB")
     print("=" * 60)
@@ -248,3 +265,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

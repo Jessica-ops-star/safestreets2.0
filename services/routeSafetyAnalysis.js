@@ -28,7 +28,7 @@ export function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
 export function buildDangerZones(safetyData = [], communityReports = []) {
   const rawItems = [];
 
-  // 1. Process Community Reports (Negative observations create danger zones)
+  // 1. Process Community Reports (Only CORROBORATED or VERIFIED reports create active danger zones)
   (communityReports || []).forEach((rep) => {
     const lat = Number(rep.latitude);
     const lon = Number(rep.longitude);
@@ -38,21 +38,40 @@ export function buildDangerZones(safetyData = [], communityReports = []) {
     const isPositive = typeStr.includes("positive") || typeStr === "safe_zone";
     if (isPositive) return;
 
+    const status = String(rep.status || "PROVISIONAL").toUpperCase();
+    const corrCount = Number(rep.corroboration_count || 0);
+    const hasEvidence = Boolean(rep.has_evidence || rep.evidence_url || rep.verified);
+
+    // UNVERIFIED ≠ IGNORED: PROVISIONAL / UNVERIFIED reports are shown for peer validation,
+    // BUT MUST NOT create active danger zones or penalize Safe Route until CORROBORATED or VERIFIED
+    if (status === "PROVISIONAL" || status === "UNVERIFIED" || status === "EXPIRED") return;
+    if (!hasEvidence && status !== "CORROBORATED" && status !== "VERIFIED" && corrCount === 0) return;
+
+    let statusTag = "Corroborated Concern";
+    if (hasEvidence || status === "VERIFIED") {
+      statusTag = "Evidence-Backed Incident";
+    } else if (status === "CORROBORATED" || corrCount > 0) {
+      statusTag = `Corroborated Concern (${corrCount} user confirmations)`;
+    }
+
     const category = rep.category || rep.issue_type || rep.report_type || "Security Incident";
     const safetyRating = Number(rep.safety_rating ?? 3);
-    const baseSeverity = Math.max(10, Math.min(90, (5 - safetyRating) * 20));
+    const baseSeverity = Math.max(15, Math.min(90, (5 - safetyRating) * 20));
 
     rawItems.push({
       id: rep.id ?? `danger_comm_${lat.toFixed(4)}_${lon.toFixed(4)}`,
       latitude: lat,
       longitude: lon,
       severity: baseSeverity,
-      category: `${category} Hotspot`,
+      category: `${category} [${statusTag}]`,
       description: rep.intelligence_briefing || rep.description || `${category} reported nearby`,
       type: "community",
+      status,
+      corroborationCount: corrCount,
       crimeCount: 1
     });
   });
+
 
   // 2. Process Safety Analysis (Historical Records)
   (safetyData || []).forEach((item) => {
@@ -122,12 +141,12 @@ export function buildDangerZones(safetyData = [], communityReports = []) {
     const totalReports = currentCluster.reduce((sum, it) => sum + it.crimeCount, 0);
     const mainCategory = currentCluster[0].category;
 
-    // Avoidance Radius: 1000m (1 KM) for high risk clusters or severe incident types
-    let radius = 300;
-    if (maxSeverity >= 50 || totalReports >= 5 || currentCluster.length >= 2) {
-      radius = 1000; // 1 KM Avoidance Zone
-    } else if (maxSeverity >= 35) {
-      radius = 600;
+    // Avoidance Radius: 250m - 500m focused zone
+    let radius = 250;
+    if (maxSeverity >= 70 || totalReports >= 5) {
+      radius = 500;
+    } else if (maxSeverity >= 45 || currentCluster.length >= 2) {
+      radius = 350;
     }
 
     const clusterId = `cluster_${item.id}`;
@@ -148,13 +167,11 @@ export function buildDangerZones(safetyData = [], communityReports = []) {
 }
 
 /**
- * Requirement 5: Calculates danger penalties for a route passing through dynamic danger zones.
- * Inside danger radius: +100 penalty
- * Within 50 m: +75
- * Within 100 m: +50
- * Within 250 m: +25
- * Within 500 m: +10
- * Outside: 0
+ * Calculates danger penalties for a route passing through dynamic danger zones.
+ * Penalties are strictly distance-proportional:
+ * - Direct penetration (< radius): High penalty (15 to 40)
+ * - Near outer buffer (< radius + 250m): Moderate penalty (2 to 12)
+ * - Outside avoidance zone (> radius + 250m): 0 penalty
  */
 export function calculateDangerPenalties(path = [], dangerZones = []) {
   if (!Array.isArray(path) || path.length === 0 || !Array.isArray(dangerZones) || dangerZones.length === 0) {
@@ -181,20 +198,16 @@ export function calculateDangerPenalties(path = [], dangerZones = []) {
       }
     });
 
-    const distOutside = Math.max(0, minDistance - zone.radius);
+    const maxEffectDistance = zone.radius + 250;
 
-    if (minDistance <= zone.radius || distOutside <= 500) {
+    if (minDistance <= maxEffectDistance) {
       let basePenalty = 0;
       if (minDistance <= zone.radius) {
-        basePenalty = 15;
-      } else if (distOutside <= 100) {
-        basePenalty = 10;
-      } else if (distOutside <= 250) {
-        basePenalty = 6;
-      } else if (distOutside <= 500) {
-        basePenalty = 3;
+        const penetrationRatio = 1 - minDistance / Math.max(1, zone.radius);
+        basePenalty = 15 + penetrationRatio * 25;
       } else {
-        basePenalty = 1;
+        const bufferRatio = 1 - (minDistance - zone.radius) / 250;
+        basePenalty = Math.max(1, bufferRatio * 12);
       }
 
       const severityMult = Math.max(0.5, zone.severity / 50);
@@ -204,7 +217,7 @@ export function calculateDangerPenalties(path = [], dangerZones = []) {
       penetratedMap.set(zone.id, {
         ...zone,
         distanceToRoute: Math.round(minDistance),
-        distOutside: Math.round(distOutside),
+        distOutside: Math.max(0, Math.round(minDistance - zone.radius)),
         penalty: Math.round(penalty * 10) / 10
       });
     }
@@ -213,7 +226,7 @@ export function calculateDangerPenalties(path = [], dangerZones = []) {
   const penetratedDangerZones = Array.from(penetratedMap.values()).sort((a, b) => b.penalty - a.penalty);
 
   return {
-    totalDangerPenalty: Math.min(40, Math.round(totalDangerPenalty * 10) / 10),
+    totalDangerPenalty: Math.min(50, Math.round(totalDangerPenalty * 10) / 10),
     penetratedDangerZones
   };
 }

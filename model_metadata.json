@@ -15,6 +15,7 @@
   },
   "parameters_count": 25732,
   "model_file_size_kb": 109.52,
+  "real_oversample_factor": 3,
   "audio_specs": {
     "sample_rate": 16000,
     "channels": 1,
@@ -29,95 +30,274 @@
     ]
   },
   "dataset_split": {
-    "synthetic_help_train": 210,
-    "synthetic_help_val": 45,
-    "synthetic_help_test": 45,
-    "real_help_train": 12,
-    "real_help_val": 0,
-    "real_help_test": 0,
-    "real_help_oversample_factor": 25,
-    "effective_real_help_train_exposure": 300,
-    "total_train_samples": 852,
-    "val_samples": 180,
-    "test_samples": 180
+    "synthetic_class_counts": {
+      "HELP": 300,
+      "UNKNOWN": 1050,
+      "NOISE": 696,
+      "SILENCE": 300
+    },
+    "real_class_counts": {
+      "HELP": 110,
+      "UNKNOWN": 100,
+      "NOISE": 100,
+      "SILENCE": 15
+    },
+    "synthetic_train_count": 1642,
+    "synthetic_val_count": 352,
+    "synthetic_test_count": 352,
+    "real_train_count": 260,
+    "real_eval_count": 65,
+    "real_train_breakdown": {
+      "HELP": 88,
+      "UNKNOWN": 80,
+      "NOISE": 80,
+      "SILENCE": 12
+    },
+    "real_eval_breakdown": {
+      "HELP": 22,
+      "UNKNOWN": 20,
+      "NOISE": 20,
+      "SILENCE": 3
+    },
+    "total_combined_train_count": 1902
   },
-  "test_results": {
-    "test_loss": 0.284684556722641,
-    "test_accuracy": 0.8944444444444445,
+  "synthetic_test_results": {
+    "test_loss": 0.23635327680544418,
+    "test_accuracy": 0.9232954545454546,
     "classification_report": {
       "HELP": {
+        "precision": 0.8888888888888888,
+        "recall": 0.8888888888888888,
+        "f1-score": 0.8888888888888888,
+        "support": 45.0
+      },
+      "UNKNOWN": {
+        "precision": 0.9681528662420382,
+        "recall": 0.9620253164556962,
+        "f1-score": 0.9650793650793651,
+        "support": 158.0
+      },
+      "NOISE": {
+        "precision": 0.9306930693069307,
+        "recall": 0.9038461538461539,
+        "f1-score": 0.9170731707317074,
+        "support": 104.0
+      },
+      "SILENCE": {
         "precision": 0.7959183673469388,
         "recall": 0.8666666666666667,
         "f1-score": 0.8297872340425532,
         "support": 45.0
       },
-      "UNKNOWN": {
-        "precision": 0.8536585365853658,
-        "recall": 0.7777777777777778,
-        "f1-score": 0.813953488372093,
-        "support": 45.0
-      },
-      "NOISE": {
-        "precision": 1.0,
-        "recall": 0.9333333333333333,
-        "f1-score": 0.9655172413793104,
-        "support": 45.0
-      },
-      "SILENCE": {
-        "precision": 0.9375,
-        "recall": 1.0,
-        "f1-score": 0.967741935483871,
-        "support": 45.0
-      },
-      "accuracy": 0.8944444444444445,
+      "accuracy": 0.9232954545454546,
       "macro avg": {
-        "precision": 0.8967692259830762,
-        "recall": 0.8944444444444444,
-        "f1-score": 0.8942499748194569,
-        "support": 180.0
+        "precision": 0.8959132979461992,
+        "recall": 0.9053567564643514,
+        "f1-score": 0.9002071646856287,
+        "support": 352.0
       },
       "weighted avg": {
-        "precision": 0.8967692259830762,
-        "recall": 0.8944444444444445,
-        "f1-score": 0.8942499748194569,
-        "support": 180.0
+        "precision": 0.9249334051272019,
+        "recall": 0.9232954545454546,
+        "f1-score": 0.9238595879845232,
+        "support": 352.0
       }
     },
     "confusion_matrix": [
       [
-        39,
+        40,
+        5,
+        0,
+        0
+      ],
+      [
+        5,
+        152,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        94,
+        10
+      ],
+      [
+        0,
+        0,
         6,
-        0,
-        0
-      ],
-      [
-        10,
-        35,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        42,
-        3
-      ],
-      [
-        0,
-        0,
-        0,
-        45
+        39
       ]
     ],
     "help_safety_metrics": {
-      "help_precision": 0.7959183673469388,
-      "help_recall": 0.8666666666666667,
-      "help_true_positives": 39,
-      "help_false_negatives": 6,
-      "help_false_positives": 10,
-      "fp_unknown_as_help": 10,
+      "help_precision": 0.8888888888888888,
+      "help_recall": 0.8888888888888888,
+      "help_true_positives": 40,
+      "help_false_negatives": 5,
+      "help_false_positives": 5,
+      "fp_unknown_as_help": 5,
       "fp_noise_as_help": 0,
       "fp_silence_as_help": 0
     }
+  },
+  "held_out_real_test_results": {
+    "test_loss": 0.33503262079679047,
+    "test_accuracy": 0.8769230769230769,
+    "classification_report": {
+      "HELP": {
+        "precision": 1.0,
+        "recall": 0.9090909090909091,
+        "f1-score": 0.9523809523809523,
+        "support": 22.0
+      },
+      "UNKNOWN": {
+        "precision": 0.7142857142857143,
+        "recall": 1.0,
+        "f1-score": 0.8333333333333334,
+        "support": 20.0
+      },
+      "NOISE": {
+        "precision": 1.0,
+        "recall": 0.7,
+        "f1-score": 0.8235294117647058,
+        "support": 20.0
+      },
+      "SILENCE": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 3.0
+      },
+      "accuracy": 0.8769230769230769,
+      "macro avg": {
+        "precision": 0.9285714285714286,
+        "recall": 0.9022727272727273,
+        "f1-score": 0.9023109243697478,
+        "support": 65.0
+      },
+      "weighted avg": {
+        "precision": 0.9120879120879121,
+        "recall": 0.8769230769230769,
+        "f1-score": 0.8783020900667959,
+        "support": 65.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        20,
+        2,
+        0,
+        0
+      ],
+      [
+        0,
+        20,
+        0,
+        0
+      ],
+      [
+        0,
+        6,
+        14,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        3
+      ]
+    ],
+    "help_safety_metrics": {
+      "help_precision": 1.0,
+      "help_recall": 0.9090909090909091,
+      "help_true_positives": 20,
+      "help_false_negatives": 2,
+      "help_false_positives": 0,
+      "fp_unknown_as_help": 0,
+      "fp_noise_as_help": 0,
+      "fp_silence_as_help": 0
+    }
+  },
+  "untouched_6_real_help_results": {
+    "file_results": [
+      {
+        "filename": "AUD-20260930-WA0010.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 80.0,
+        "probabilities_pct": {
+          "HELP": 2.41,
+          "UNKNOWN": 80.0,
+          "NOISE": 17.37,
+          "SILENCE": 0.22
+        }
+      },
+      {
+        "filename": "AUD-20260930-WA0011.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 83.3,
+        "probabilities_pct": {
+          "HELP": 3.46,
+          "UNKNOWN": 83.3,
+          "NOISE": 13.11,
+          "SILENCE": 0.13
+        }
+      },
+      {
+        "filename": "AUD-20260930-WA0012.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 91.21,
+        "probabilities_pct": {
+          "HELP": 5.91,
+          "UNKNOWN": 91.21,
+          "NOISE": 2.88,
+          "SILENCE": 0.0
+        }
+      },
+      {
+        "filename": "AUD-20260930-WA0013.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 85.45,
+        "probabilities_pct": {
+          "HELP": 4.71,
+          "UNKNOWN": 85.45,
+          "NOISE": 9.77,
+          "SILENCE": 0.08
+        }
+      },
+      {
+        "filename": "AUD-20260930-WA0014.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 90.86,
+        "probabilities_pct": {
+          "HELP": 2.44,
+          "UNKNOWN": 90.86,
+          "NOISE": 6.65,
+          "SILENCE": 0.05
+        }
+      },
+      {
+        "filename": "AUD-20260930-WA0029.wav",
+        "actual_class": "HELP",
+        "predicted_class": "UNKNOWN",
+        "confidence_pct": 60.82,
+        "probabilities_pct": {
+          "HELP": 21.45,
+          "UNKNOWN": 60.82,
+          "NOISE": 17.66,
+          "SILENCE": 0.07
+        }
+      }
+    ],
+    "total_files": 6,
+    "correct_count": 0,
+    "missed_count": 6,
+    "real_help_accuracy": 0.0,
+    "real_help_recall": 0.0
   }
 }

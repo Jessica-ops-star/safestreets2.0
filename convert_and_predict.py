@@ -22,21 +22,14 @@ from predict_voice import predict_audio
 def convert_to_16k_mono_wav(
     input_path: str,
     output_path: str,
-    target_sr: int = 16000,
-    target_duration: float = 1.0
+    target_sr: int = 16000
 ):
     """
-    Convert browser-recorded audio such as WebM/Opus into the
-    exact audio format required by the SafeStreets voice model.
-
-    Output:
-    - 16,000 Hz
-    - mono
-    - exactly 1 second
-    - PCM 16-bit WAV
+    Convert browser-recorded audio such as WebM/Opus into 16,000 Hz, 1-channel mono PCM WAV.
+    Preserves the full recording duration without truncating to 1.0 second.
+    Padding is applied ONLY if the total duration is less than 1.0 second.
     """
-
-    target_samples = int(target_sr * target_duration)
+    target_samples = int(target_sr * 1.0)
 
     # Exact FFmpeg executable installed on this system.
     ffmpeg_path = r"C:\Users\jessi\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe"
@@ -87,15 +80,14 @@ def convert_to_16k_mono_wav(
             f"Unexpected sample rate after FFmpeg conversion: {sr}"
         )
 
-    # Make the audio exactly 1 second / 16,000 samples.
+    # Pad audio if total length is less than 1 second (16,000 samples)
     if len(y) < target_samples:
         padding = target_samples - len(y)
         y = np.pad(y, (0, padding), mode="constant")
 
-    elif len(y) > target_samples:
-        y = y[:target_samples]
+    # Do NOT truncate clips > 1 second; keep the entire recording for multi-window evaluation
 
-    # Save the final normalized WAV.
+    # Save the final 16kHz mono WAV.
     sf.write(
         output_path,
         y,

@@ -202,6 +202,45 @@ export default function SafetyMap({ reports = [] }) {
                           </p>
                         </div>
 
+                        {/* Validation Status Badge in Popup */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          {(() => {
+                            const valStatus = (report.status || (report.verified ? 'VERIFIED' : 'PROVISIONAL')).toUpperCase();
+                            if (valStatus === 'VERIFIED' || report.has_evidence || report.verified) {
+                              return (
+                                <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded bg-emerald-500 text-white">
+                                  ✓ Verified (Evidence)
+                                </span>
+                              );
+                            }
+                            if (valStatus === 'CORROBORATED') {
+                              return (
+                                <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded bg-blue-600 text-white">
+                                  ✓ Corroborated ({report.corroboration_count || 1})
+                                </span>
+                              );
+                            }
+                            if (valStatus === 'EXPIRED') {
+                              return (
+                                <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded bg-slate-400 text-white">
+                                  Stale / Expired
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded bg-amber-500 text-white">
+                                ⚠ Provisional (Unverified)
+                              </span>
+                            );
+                          })()}
+
+                          {report.corroboration_count > 0 && (
+                            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                              +{report.corroboration_count} user confirmed
+                            </span>
+                          )}
+                        </div>
+
                         {report.description && (
                           <div className="p-2 rounded-lg bg-slate-50 border border-slate-100 text-xs font-medium text-slate-700 leading-relaxed flex items-start gap-1.5">
                             <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />

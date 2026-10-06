@@ -39,6 +39,7 @@ export default function SafeNavigation() {
   const [safetyLoading, setSafetyLoading] = useState(true);
   const [safetyError, setSafetyError] = useState("");
   const [deviationAlert, setDeviationAlert] = useState("");
+  const [reportAlert, setReportAlert] = useState("");
 
   // Trusted Places State for Map Layer
   const [trustedPlaces, setTrustedPlaces] = useState([]);
@@ -147,7 +148,23 @@ export default function SafeNavigation() {
 
   useEffect(() => {
     void loadSafetyContext();
-  }, []);
+
+    const handleReportUpdated = async (event) => {
+      console.log("[SAFE NAVIGATION] Real-time community report event received:", event?.detail);
+      const updatedReports = await getCommunityReports();
+      setCommunityReports(updatedReports);
+      
+      const statusLabel = event?.detail?.report?.status || "unverified";
+      setReportAlert(`⚠️ Safe Route updated in real-time due to a nearby ${statusLabel.toLowerCase()} safety report.`);
+
+      if (origin.coords && destination.coords) {
+        await calculateRouteWithCoords(origin.coords, destination.coords);
+      }
+    };
+
+    window.addEventListener("community-report-updated", handleReportUpdated);
+    return () => window.removeEventListener("community-report-updated", handleReportUpdated);
+  }, [origin.coords, destination.coords]);
 
   useEffect(() => {
     if (!origin.coords || !destination.coords || !routes?.safest) return;
@@ -182,8 +199,11 @@ export default function SafeNavigation() {
     }
   };
 
-  const calculateRouteWithCoords = async (srcCoords, destCoords) => {
+  const calculateRouteWithCoords = async (srcCoords, destCoords, srcLabel = "", destLabel = "") => {
     if (!srcCoords || !destCoords) return;
+    
+    // Invalidate previous route state to prevent old route from persisting across destination changes
+    setRoutes(null);
     setLoading(true);
     setRecenterOnUser(false);
     setIsUserInteracting(false);
@@ -207,7 +227,10 @@ export default function SafeNavigation() {
         communityReports: activeCommunityReports,
       };
 
-      const routeResults = await evaluateAllRoutes(origin, destination, safetyContext);
+      const fromObj = { label: srcLabel || origin.label || "Origin", coords: srcCoords };
+      const toObj = { label: destLabel || destination.label || "Destination", coords: destCoords };
+
+      const routeResults = await evaluateAllRoutes(fromObj, toObj, safetyContext);
       setRoutes(routeResults);
       setSelectedRoute("safest");
     } catch (error) {
@@ -219,7 +242,7 @@ export default function SafeNavigation() {
 
   const handleRouteCalculation = async () => {
     if (!origin.coords || !destination.coords) return;
-    await calculateRouteWithCoords(origin.coords, destination.coords);
+    await calculateRouteWithCoords(origin.coords, destination.coords, origin.label, destination.label);
   };
 
   // Auto-calculate route when destination is supplied via URL query parameters (e.g. from Emergency page)
@@ -346,8 +369,14 @@ export default function SafeNavigation() {
                    <SearchBox
                     label="Current Origin"
                     value={origin.label}
-                    onChange={(val) => setOrigin({ label: val, coords: origin.coords })}
-                    onSelect={(sel) => setOrigin(sel)}
+                    onChange={(val) => {
+                      setRoutes(null);
+                      setOrigin({ label: val, coords: null });
+                    }}
+                    onSelect={(sel) => {
+                      setRoutes(null);
+                      setOrigin(sel);
+                    }}
                     onSelectLive={useLiveLocationAsOrigin}
                     headerRight={
                       <button
@@ -373,8 +402,14 @@ export default function SafeNavigation() {
                   <SearchBox
                     label="Final Destination"
                     value={destination.label}
-                    onChange={(val) => setDestination({ label: val, coords: destination.coords })}
-                    onSelect={(sel) => setDestination(sel)}
+                    onChange={(val) => {
+                      setRoutes(null);
+                      setDestination({ label: val, coords: null });
+                    }}
+                    onSelect={(sel) => {
+                      setRoutes(null);
+                      setDestination(sel);
+                    }}
                     placeholder="Where are you heading?"
                   />
                 </div>
@@ -407,6 +442,18 @@ export default function SafeNavigation() {
               {deviationAlert && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                   {deviationAlert}
+                </div>
+              )}
+
+              {reportAlert && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 font-medium flex items-center justify-between">
+                  <span>{reportAlert}</span>
+                  <button 
+                    onClick={() => setReportAlert("")} 
+                    className="text-xs text-slate-500 hover:text-slate-800 ml-2 font-bold"
+                  >
+                    ✕
+                  </button>
                 </div>
               )}
             </div>

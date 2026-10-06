@@ -141,18 +141,18 @@ def apply_spec_augment(
 
 
 class SafeStreetsDataset(Dataset):
-    """PyTorch Dataset for SafeStreets audio samples with dynamic real-HELP oversampling & augmentation."""
-    def __init__(self, filepaths: list, labels: list, is_train: bool = False, real_help_oversample_factor: int = 25):
+    """PyTorch Dataset for SafeStreets audio samples with dynamic real-voice oversampling & augmentation."""
+    def __init__(self, filepaths: list, labels: list, is_train: bool = False, real_oversample_factor: int = 3):
         self.is_train = is_train
 
-        if is_train and real_help_oversample_factor > 1:
+        if is_train and real_oversample_factor > 1:
             expanded_paths = []
             expanded_labels = []
             for path, lbl in zip(filepaths, labels):
                 if "real_voice_train" in path:
-                    # Oversample real HELP training files by factor (e.g. 25x)
-                    expanded_paths.extend([path] * real_help_oversample_factor)
-                    expanded_labels.extend([lbl] * real_help_oversample_factor)
+                    # Oversample real voice training files by factor (e.g. 3x)
+                    expanded_paths.extend([path] * real_oversample_factor)
+                    expanded_labels.extend([lbl] * real_oversample_factor)
                 else:
                     expanded_paths.append(path)
                     expanded_labels.append(lbl)
@@ -162,28 +162,36 @@ class SafeStreetsDataset(Dataset):
             self.filepaths = list(filepaths)
             self.labels = list(labels)
 
+        # Preload raw audio arrays into RAM for fast training iterations
+        self.cached_audio = []
+        for fp in self.filepaths:
+            try:
+                y, sr = librosa.load(fp, sr=16000, mono=True)
+            except Exception:
+                data, sr = sf.read(fp)
+                if data.ndim > 1:
+                    data = np.mean(data, axis=1)
+                if sr != 16000:
+                    data = librosa.resample(data, orig_sr=sr, target_sr=16000)
+                y = data
+            self.cached_audio.append(np.array(y, dtype=np.float32))
+
     def __len__(self) -> int:
         return len(self.filepaths)
 
     def __getitem__(self, idx: int):
         filepath = self.filepaths[idx]
         label = self.labels[idx]
+        y_raw = self.cached_audio[idx]
 
-        # Dynamic augmentation for real HELP training files
-        is_real_help = "real_voice_train" in filepath
+        # Dynamic augmentation for real voice training files
+        is_real = "real_voice_train" in filepath
 
-        if self.is_train and is_real_help:
-            try:
-                y, sr = librosa.load(filepath, sr=16000, mono=True)
-            except Exception:
-                data, sr = sf.read(filepath)
-                if data.ndim > 1:
-                    data = np.mean(data, axis=1)
-                y = data
-            y = augment_real_audio(y)
+        if self.is_train and is_real:
+            y = augment_real_audio(y_raw)
             mel = extract_log_mel_spectrogram(y)
         else:
-            mel = extract_log_mel_spectrogram(filepath)
+            mel = extract_log_mel_spectrogram(y_raw)
 
         if self.is_train:
             mel = apply_spec_augment(mel)
@@ -195,18 +203,27 @@ class SafeStreetsDataset(Dataset):
         return tensor_mel, tensor_label
 
 
+
 def get_stratified_dataset_splits(
     dataset_dir: str = None,
     real_train_dir: str = None,
     train_ratio: float = 0.70,
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
+    real_eval_ratio: float = 0.20,
     seed: int = 42
 ):
     """
     Discovers synthetic dataset files and splits them 70% Train, 15% Validation, 15% Test.
-    ALL real_voice_train/HELP recordings are assigned exclusively to the TRAIN split.
-    Zero real HELP recordings enter Validation or Test splits.
+    Discovers ALL FOUR real-world dataset folders (HELP, UNKNOWN, NOISE, SILENCE) in real_voice_train
+    and performs a reproducible 80% Train / 20% Held-Out Evaluation split (stratified by class).
+    Combines Synthetic Train + Real Train for training.
+    Returns:
+      (train_paths, train_labels),
+      (val_paths, val_labels),
+      (synth_test_paths, synth_test_labels),
+      (real_eval_paths, real_eval_labels),
+      counts_info
     """
     if dataset_dir is None:
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -215,24 +232,25 @@ def get_stratified_dataset_splits(
         base_dir = os.path.dirname(os.path.abspath(__file__))
         real_train_dir = os.path.join(base_dir, "real_voice_train")
 
+    # 1. Discover Synthetic Dataset Files
     synthetic_filepaths = []
     synthetic_labels = []
-    class_counts = {}
+    synth_class_counts = {}
 
     for class_name, class_idx in CLASS_MAP.items():
         class_folder = os.path.join(dataset_dir, class_name)
         if not os.path.exists(class_folder):
-            raise FileNotFoundError(f"Dataset directory missing: {class_folder}")
+            raise FileNotFoundError(f"Synthetic dataset directory missing: {class_folder}")
 
         files = [os.path.join(class_folder, f) for f in os.listdir(class_folder) if f.endswith('.wav')]
-        class_counts[class_name] = len(files)
+        synth_class_counts[class_name] = len(files)
         print(f"Discovered {len(files)} synthetic files for class '{class_name}' (label: {class_idx})")
 
         synthetic_filepaths.extend(files)
         synthetic_labels.extend([class_idx] * len(files))
 
     # Stratified split on synthetic files
-    train_paths, temp_paths, train_labels, temp_labels = train_test_split(
+    synth_train_paths, synth_temp_paths, synth_train_labels, synth_temp_labels = train_test_split(
         synthetic_filepaths,
         synthetic_labels,
         test_size=(val_ratio + test_ratio),
@@ -240,72 +258,90 @@ def get_stratified_dataset_splits(
         random_state=seed
     )
 
-    val_paths, test_paths, val_labels, test_labels = train_test_split(
-        temp_paths,
-        temp_labels,
+    synth_val_paths, synth_test_paths, synth_val_labels, synth_test_labels = train_test_split(
+        synth_temp_paths,
+        synth_temp_labels,
         test_size=0.50,
-        stratify=temp_labels,
+        stratify=synth_temp_labels,
         random_state=seed
     )
 
-    # Discover real HELP files and force 100% of them into TRAIN split ONLY
-    real_help_files = []
-    real_help_folder = os.path.join(real_train_dir, "HELP")
-    if os.path.exists(real_help_folder):
-        real_help_files = [os.path.join(real_help_folder, f) for f in os.listdir(real_help_folder) if f.endswith('.wav')]
+    # 2. Discover Real-World Audio Files (All 4 Classes: HELP, UNKNOWN, NOISE, SILENCE)
+    real_filepaths = []
+    real_labels = []
+    real_class_counts = {}
 
-    print(f"Discovered {len(real_help_files)} real HELP files for training.")
+    for class_name, class_idx in CLASS_MAP.items():
+        real_folder = os.path.join(real_train_dir, class_name)
+        if os.path.exists(real_folder):
+            files = [os.path.join(real_folder, f) for f in os.listdir(real_folder) if f.endswith('.wav')]
+            real_class_counts[class_name] = len(files)
+            print(f"Discovered {len(files)} real-world files for class '{class_name}' (label: {class_idx})")
 
-    # Append ALL real HELP files ONLY to the TRAIN split
-    train_paths = list(train_paths) + list(real_help_files)
-    train_labels = list(train_labels) + [CLASS_MAP["HELP"]] * len(real_help_files)
+            real_filepaths.extend(files)
+            real_labels.extend([class_idx] * len(files))
+        else:
+            real_class_counts[class_name] = 0
+            print(f"WARNING: Real-world folder missing: {real_folder}")
 
-    # Count breakdown for logging
-    synth_help_train = sum(1 for p, l in zip(train_paths, train_labels) if l == CLASS_MAP["HELP"] and "real_voice_train" not in p)
-    synth_help_val = sum(1 for p, l in zip(val_paths, val_labels) if l == CLASS_MAP["HELP"] and "real_voice_train" not in p)
-    synth_help_test = sum(1 for p, l in zip(test_paths, test_labels) if l == CLASS_MAP["HELP"] and "real_voice_train" not in p)
+    # Stratified split on real-world recordings (80% Train, 20% Held-Out Evaluation)
+    real_train_paths, real_eval_paths, real_train_labels, real_eval_labels = train_test_split(
+        real_filepaths,
+        real_labels,
+        test_size=real_eval_ratio,
+        stratify=real_labels,
+        random_state=seed
+    )
 
-    real_help_train = sum(1 for p in train_paths if "real_voice_train" in p)
-    real_help_val = sum(1 for p in val_paths if "real_voice_train" in p)
-    real_help_test = sum(1 for p in test_paths if "real_voice_train" in p)
+    # Combine synthetic train + real train
+    train_paths = list(synth_train_paths) + list(real_train_paths)
+    train_labels = list(synth_train_labels) + list(real_train_labels)
 
-    oversample_factor = 25
-    effective_real_help_train = real_help_train * oversample_factor
+    # Validation set uses synthetic validation split
+    val_paths = list(synth_val_paths)
+    val_labels = list(synth_val_labels)
+
+    # Synthetic test set
+    synth_test_paths = list(synth_test_paths)
+    synth_test_labels = list(synth_test_labels)
+
+    # Held-out real evaluation set
+    real_eval_paths = list(real_eval_paths)
+    real_eval_labels = list(real_eval_labels)
 
     counts_info = {
-        "synthetic_help_train": synth_help_train,
-        "synthetic_help_val": synth_help_val,
-        "synthetic_help_test": synth_help_test,
-        "real_help_train": real_help_train,
-        "real_help_val": real_help_val,
-        "real_help_test": real_help_test,
-        "real_help_oversample_factor": oversample_factor,
-        "effective_real_help_train_exposure": effective_real_help_train,
-        "total_train_samples": len(train_paths),
-        "val_samples": len(val_paths),
-        "test_samples": len(test_paths)
+        "synthetic_class_counts": synth_class_counts,
+        "real_class_counts": real_class_counts,
+        "synthetic_train_count": len(synth_train_paths),
+        "synthetic_val_count": len(synth_val_paths),
+        "synthetic_test_count": len(synth_test_paths),
+        "real_train_count": len(real_train_paths),
+        "real_eval_count": len(real_eval_paths),
+        "real_train_breakdown": {c: real_train_labels.count(i) for c, i in CLASS_MAP.items()},
+        "real_eval_breakdown": {c: real_eval_labels.count(i) for c, i in CLASS_MAP.items()},
+        "total_combined_train_count": len(train_paths)
     }
 
-    print("\n" + "=" * 50)
-    print("      DATASET SPLIT & OVER-SAMPLING SUMMARY")
-    print("=" * 50)
-    print("Synthetic HELP:")
-    print(f"  train count      : {synth_help_train}")
-    print(f"  validation count : {synth_help_val}")
-    print(f"  test count       : {synth_help_test}")
-    print("\nReal HELP:")
-    print(f"  train count      : {real_help_train}")
-    print(f"  validation count : {real_help_val}")
-    print(f"  test count       : {real_help_test}")
-    print(f"\nEffective real HELP samples per epoch after oversampling ({oversample_factor}x): {effective_real_help_train}")
-    print("=" * 50 + "\n")
+    print("\n" + "=" * 55)
+    print("      DATASET DISCOVERY & SPLIT SUMMARY")
+    print("=" * 55)
+    print(f"Synthetic Dataset Total Files: {len(synthetic_filepaths)}")
+    print(f"  - Synthetic Train Count    : {len(synth_train_paths)}")
+    print(f"  - Synthetic Val Count      : {len(synth_val_paths)}")
+    print(f"  - Synthetic Test Count     : {len(synth_test_paths)}")
+    print("\nReal-World Dataset Total Files:", len(real_filepaths))
+    for c in CLASS_MAP.keys():
+        print(f"  - {c:<8} Total: {real_class_counts[c]:<4} | Train (80%): {counts_info['real_train_breakdown'][c]:<3} | Held-Out (20%): {counts_info['real_eval_breakdown'][c]:<3}")
+    print(f"\nTotal Combined Train Set Size: {len(train_paths)} samples")
+    print("=" * 55 + "\n")
 
-    return (train_paths, train_labels), (val_paths, val_labels), (test_paths, test_labels), counts_info
+    return (train_paths, train_labels), (val_paths, val_labels), (synth_test_paths, synth_test_labels), (real_eval_paths, real_eval_labels), counts_info
 
 
 if __name__ == "__main__":
-    train_data, val_data, test_data, info = get_stratified_dataset_splits()
-    train_dataset = SafeStreetsDataset(train_data[0], train_data[1], is_train=True)
-    print("Effective training dataset length after 25x oversampling:", len(train_dataset))
+    train_data, val_data, synth_test_data, real_eval_data, info = get_stratified_dataset_splits()
+    train_dataset = SafeStreetsDataset(train_data[0], train_data[1], is_train=True, real_oversample_factor=3)
+    print("Effective training dataset length after 3x real oversampling:", len(train_dataset))
+
 
 

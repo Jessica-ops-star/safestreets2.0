@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { reverseGeocodeAddress, ReportLocationDisplay } from "../../../services/geocoding.js";
+import NearbyValidationCard from "../../safety/NearbyValidationCard.jsx";
 
 const formatDate = (dateVal) => {
   if (!dateVal) return "Recently";
@@ -65,7 +66,7 @@ const getReportIcon = (reportType) => {
   }
 };
 
-function ReportCard({ report, index, onDeleteReport }) {
+function ReportCard({ report, index, onDeleteReport, currentUser, userLocation }) {
   const isRawCoords = 
     !report.location ||
     report.location.toLowerCase().includes("current gps") ||
@@ -189,17 +190,46 @@ function ReportCard({ report, index, onDeleteReport }) {
               </p>
             )}
 
-            <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100/50">
-              <div className="flex items-center gap-2">
+             <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100/50">
+              <div className="flex flex-wrap items-center gap-2">
                  <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] border ${getReportTypeStyles(report.report_type)}`}>
                    {report.report_type ? report.report_type.replace(/_/g, ' ') : 'Incident'}
                  </span>
-                 {report.verified && (
-                   <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] bg-blue-500 text-white shadow-lg shadow-blue-500/20">
-                     <Verified className="w-3 h-3" />
-                     Authenticated
-                   </div>
-                 )}
+
+                 {/* Validation Status Badge */}
+                 {(() => {
+                   const status = (report.status || (report.verified ? 'VERIFIED' : 'PROVISIONAL')).toUpperCase();
+                   if (status === 'VERIFIED' || report.has_evidence || report.verified) {
+                     return (
+                       <span className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] bg-emerald-500 text-white shadow-lg shadow-emerald-500/20">
+                         <Verified className="w-3 h-3" />
+                         VERIFIED (EVIDENCE-BACKED)
+                       </span>
+                     );
+                   }
+                   if (status === 'CORROBORATED') {
+                     return (
+                       <span className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] bg-blue-600 text-white shadow-lg shadow-blue-600/20">
+                         <Shield className="w-3 h-3" />
+                         CORROBORATED ({report.corroboration_count || 1}+ CONFIRMED)
+                       </span>
+                     );
+                   }
+                   if (status === 'EXPIRED') {
+                     return (
+                       <span className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] bg-slate-400 text-white">
+                         <Clock className="w-3 h-3" />
+                         EXPIRED (STALE)
+                       </span>
+                     );
+                   }
+                   return (
+                     <span className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.15em] bg-amber-500 text-white shadow-lg shadow-amber-500/20">
+                       <AlertTriangle className="w-3 h-3" />
+                       PROVISIONAL (UNVERIFIED)
+                     </span>
+                   );
+                 })()}
               </div>
               
               <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-4">
@@ -207,6 +237,11 @@ function ReportCard({ report, index, onDeleteReport }) {
                  Sector Sentinel
                  <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
               </div>
+            </div>
+
+            {/* Embedded Validation Controls */}
+            <div className="mt-4 pt-3 border-t border-slate-100">
+              <NearbyValidationCard report={report} currentUser={currentUser} userLocation={userLocation} compact={true} />
             </div>
           </div>
         </div>
@@ -244,7 +279,7 @@ function ReportCard({ report, index, onDeleteReport }) {
   );
 }
 
-export default function ReportsList({ reports, loading, filterType, onFilterChange, onDeleteReport }) {
+export default function ReportsList({ reports, loading, filterType, onFilterChange, onDeleteReport, currentUser, userLocation }) {
   if (loading) {
     return (
       <div className="space-y-6">
@@ -313,6 +348,8 @@ export default function ReportsList({ reports, loading, filterType, onFilterChan
               report={report}
               index={index}
               onDeleteReport={onDeleteReport}
+              currentUser={currentUser}
+              userLocation={userLocation}
             />
           ))}
         </div>

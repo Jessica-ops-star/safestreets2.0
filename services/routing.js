@@ -353,43 +353,65 @@ async function fetchCandidateRoutes(
 
 
   // ==========================================================
-  // 3. GEOMETRIC DETOUR FALLBACK
+  // 3. PARALLEL CORRIDOR ALTERNATIVE GENERATION
   // ==========================================================
 
   const distKm = haversineDistanceKm(origin, destination);
 
   if (
-    rawRoutes.length === 1 &&
-    distKm > 0.5 &&
-    rawRoutes[0].geometry?.coordinates?.length > 4
+    rawRoutes.length < 3 &&
+    distKm > 0.2 &&
+    rawRoutes[0]?.geometry?.coordinates?.length >= 4
   ) {
-    const baseCoords = rawRoutes[0].geometry.coordinates;
-    const midIdx = Math.floor(baseCoords.length / 2);
-    const midPoint = baseCoords[midIdx];
+    const coords = rawRoutes[0].geometry.coordinates;
+    const midIdx = Math.floor(coords.length / 2);
+    const midLon = coords[midIdx][0];
+    const midLat = coords[midIdx][1];
 
-    const detour1 = [midPoint[0] + 0.012, midPoint[1] + 0.010];
-    const detour2 = [midPoint[0] - 0.010, midPoint[1] - 0.012];
+    const dLon = destination.lon - origin.lon;
+    const dLat = destination.lat - origin.lat;
+    const len = Math.sqrt(dLon * dLon + dLat * dLat);
 
-    const detourPromises = [detour1, detour2].map(async (detourPt) => {
-      try {
-        const dUrl = `https://router.project-osrm.org/route/v1/driving/${origin.lon},${origin.lat};${detourPt[0]},${detourPt[1]};${destination.lon},${destination.lat}?overview=full&geometries=geojson`;
+    if (len > 0.0001) {
+      const perpLon = -dLat / len;
+      const perpLat = dLon / len;
+      const scale = Math.min(0.035, Math.max(0.015, distKm * 0.12));
 
-        const dRes = await fetch(dUrl, {
-          headers: { Accept: "application/json" }
-        });
+      const waypoints = [
+        [midLon + perpLon * scale, midLat + perpLat * scale],
+        [midLon - perpLon * scale, midLat - perpLat * scale],
+        [midLon + perpLon * scale * 1.8, midLat + perpLat * scale * 1.8],
+        [midLon - perpLon * scale * 1.8, midLat - perpLat * scale * 1.8]
+      ];
 
-        if (dRes.ok) {
-          const dData = await dRes.json();
-          return dData?.routes?.[0] || null;
+      const detourPromises = waypoints.map(async (wp) => {
+        try {
+          const dUrl = `https://router.project-osrm.org/route/v1/driving/${origin.lon},${origin.lat};${wp[0].toFixed(5)},${wp[1].toFixed(5)};${destination.lon},${destination.lat}?overview=full&geometries=geojson`;
+
+          const dRes = await fetch(dUrl, {
+            headers: { Accept: "application/json" }
+          });
+
+          if (dRes.ok) {
+            const dData = await dRes.json();
+            return dData?.routes?.[0] || null;
+          }
+        } catch {
+          return null;
         }
-      } catch {
         return null;
-      }
-      return null;
-    });
+      });
 
-    const fallbackDetours = (await Promise.all(detourPromises)).filter(Boolean);
-    rawRoutes = [...rawRoutes, ...fallbackDetours];
+      const fallbackDetours = (await Promise.all(detourPromises)).filter(Boolean);
+      fallbackDetours.forEach((alt) => {
+        const isDuplicate = rawRoutes.some(
+          (existing) => Math.abs(Number(existing.distance) - Number(alt.distance)) < 20 && Math.abs(Number(existing.duration) - Number(alt.duration)) < 5
+        );
+        if (!isDuplicate) {
+          rawRoutes.push(alt);
+        }
+      });
+    }
   }
 
 
@@ -611,7 +633,7 @@ export async function evaluateAllRoutes(
     const previousSafestRisk = currentSafest.internalRouteRisk;
     const targetZone = currentSafest.penetratedDangerZones[0];
 
-    const offset = (rerouteAttempt * 0.006) + 0.012;
+    const offset = (rerouteAttempt * 0.012) + 0.015;
 
     const detourWaypoints = [
       [targetZone.longitude + offset, targetZone.latitude + offset],

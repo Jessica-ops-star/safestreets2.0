@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 
 # Change this ONLY if your Kaggle train folder is elsewhere.
-KAGGLE_TRAIN_DIR = Path(r"C:\Users\jessi\Downloads\train.7z")
+KAGGLE_TRAIN_DIR = Path(r"C:\Users\jessi\Downloads\train\audio")
 
 DATASET_DIR = PROJECT_DIR / "safestreets_dataset"
 

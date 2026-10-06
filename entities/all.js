@@ -2,7 +2,13 @@ import safetyReportsSeed from './safetyreports.json' with { type: 'json' };
 import emergencyContactsSeed from './emergencycontact.json' with { type: 'json' };
 import sosAlertSeed from './sosalert.json' with { type: 'json' };
 import { supabase } from '../src/lib/supabase.js';
-import { getCommunityReports, addCommunityReport, deleteCommunityReport } from '../services/supabaseService.js';
+import { 
+  getCommunityReports, 
+  addCommunityReport, 
+  deleteCommunityReport,
+  corroborateReport,
+  attachEvidenceToReport
+} from '../services/supabaseService.js';
 
 function readStore(key, seed) {
     const raw = localStorage.getItem(key);
@@ -309,11 +315,34 @@ export const SafetyReport = {
 			id: generateId('report'),
 			created_date: now,
 			created_at: now,
+			status: 'PROVISIONAL',
+			corroboration_count: 0,
+			negative_count: 0,
+			has_evidence: false,
 			...data
 		};
 		items.unshift(newItem);
 		writeStore('safety_reports', items);
 		return newItem;
+	},
+	async corroborate(reportId, responseType, additionalInfo = "") {
+		try {
+			const updated = await corroborateReport(reportId, responseType, additionalInfo);
+			if (updated) return updated;
+		} catch (err) {
+			console.warn("Supabase report corroboration warning:", err);
+			throw err;
+		}
+		return null;
+	},
+	async attachEvidence(reportId, evidenceData = {}) {
+		try {
+			const updated = await attachEvidenceToReport(reportId, evidenceData);
+			if (updated) return updated;
+		} catch (err) {
+			console.warn("Supabase report attach evidence warning:", err);
+		}
+		return null;
 	},
 	async delete(id) {
 		if (!id) return false;
@@ -328,6 +357,7 @@ export const SafetyReport = {
 		return true;
 	}
 };
+
 
 export const EmergencyContact = {
 	clearCache() {

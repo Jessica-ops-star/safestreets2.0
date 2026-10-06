@@ -4,7 +4,7 @@ train_voice_model.py - SafeStreets Voice Model Training & Checkpoint Saver
 Trains SafeStreetsVoiceNet 4-class keyword spotting model on Log-Mel Spectrogram features.
 Outputs:
 - voice_model.pth (Best PyTorch model weights)
-- model_metadata.json (Model parameters, class mappings, and final test metrics)
+- model_metadata.json (Model parameters, class mappings, dataset splits, and 3-part test metrics)
 """
 
 import os
@@ -13,11 +13,12 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 
 from model_architecture import SafeStreetsVoiceNet, CLASS_MAP, count_parameters
-from dataset_utils import SafeStreetsDataset, get_stratified_dataset_splits
+from dataset_utils import SafeStreetsDataset, get_stratified_dataset_splits, extract_log_mel_spectrogram
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
@@ -28,7 +29,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
     for inputs, targets in dataloader:
         inputs, targets = inputs.to(device), targets.to(device)
-        
+
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, targets)
@@ -45,7 +46,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     return epoch_loss, epoch_acc
 
 
-def evaluate_model(model, dataloader, criterion, device):
+def evaluate_dataset_loader(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
     all_preds = []
@@ -59,14 +60,92 @@ def evaluate_model(model, dataloader, criterion, device):
 
             running_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs, 1)
-            
+
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
 
     total = len(all_targets)
-    loss = running_loss / total
-    acc = accuracy_score(all_targets, all_preds)
+    loss = running_loss / total if total > 0 else 0.0
+    acc = accuracy_score(all_targets, all_preds) if total > 0 else 0.0
     return loss, acc, np.array(all_targets), np.array(all_preds)
+
+
+def evaluate_untouched_real_help_files(model, device, test_dir=None):
+    if test_dir is None:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        test_dir = os.path.join(base_dir, "real_voice_test", "HELP")
+
+    if not os.path.exists(test_dir):
+        print(f"[WARNING] Untouched real HELP folder not found at: {test_dir}")
+        return {}
+
+    wav_files = [f for f in os.listdir(test_dir) if f.endswith(".wav")]
+    results = []
+    correct_count = 0
+
+    print("\n" + "=" * 80)
+    print("      EVALUATION C: ORIGINAL 6 UNTOUCHED REAL HELP RECORDINGS")
+    print("=" * 80)
+    print(f"{'Filename':<34} | {'Actual':<6} | {'Pred':<8} | {'Conf %':<7} | {'HELP %':<7} | {'UNK %':<7} | {'NOISE %':<7} | {'SIL %':<6}")
+    print("-" * 80)
+
+    for wav_file in sorted(wav_files):
+        file_path = os.path.join(test_dir, wav_file)
+        log_mel = extract_log_mel_spectrogram(file_path)
+        tensor_input = torch.tensor(log_mel, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            logits = model(tensor_input)
+            probs = F.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+
+        pred_idx = int(np.argmax(probs))
+        pred_class = CLASS_MAP[pred_idx]
+        confidence = float(probs[pred_idx]) * 100.0
+
+        if pred_class == "HELP":
+            correct_count += 1
+
+        p_help = float(probs[0] * 100.0)
+        p_unknown = float(probs[1] * 100.0)
+        p_noise = float(probs[2] * 100.0)
+        p_silence = float(probs[3] * 100.0)
+
+        print(f"{wav_file[:33]:<34} | HELP   | {pred_class:<8} | {confidence:>6.2f}% | {p_help:>6.2f}% | {p_unknown:>6.2f}% | {p_noise:>6.2f}% | {p_silence:>6.2f}%")
+
+        results.append({
+            "filename": wav_file,
+            "actual_class": "HELP",
+            "predicted_class": pred_class,
+            "confidence_pct": round(confidence, 2),
+            "probabilities_pct": {
+                "HELP": round(p_help, 2),
+                "UNKNOWN": round(p_unknown, 2),
+                "NOISE": round(p_noise, 2),
+                "SILENCE": round(p_silence, 2)
+            }
+        })
+
+    total_files = len(wav_files)
+    accuracy = (correct_count / total_files) if total_files > 0 else 0.0
+    recall = accuracy
+    missed_count = total_files - correct_count
+
+    print("-" * 80)
+    print(f"Untouched Real HELP Total Files : {total_files}")
+    print(f"Correctly Identified (TP)      : {correct_count} / {total_files}")
+    print(f"Missed HELP Emergencies (FN)   : {missed_count} / {total_files}")
+    print(f"Untouched Real HELP Accuracy   : {accuracy * 100.0:.2f}%")
+    print(f"Untouched Real HELP Recall     : {recall * 100.0:.2f}%")
+    print("=" * 80 + "\n")
+
+    return {
+        "file_results": results,
+        "total_files": total_files,
+        "correct_count": correct_count,
+        "missed_count": missed_count,
+        "real_help_accuracy": float(accuracy),
+        "real_help_recall": float(recall)
+    }
 
 
 def main():
@@ -79,16 +158,20 @@ def main():
     print(f"Using compute device: {device}\n")
 
     # 2. Load dataset splits
-    (train_paths, train_labels), (val_paths, val_labels), (test_paths, test_labels), counts_info = get_stratified_dataset_splits()
+    (train_paths, train_labels), (val_paths, val_labels), (synth_test_paths, synth_test_labels), (real_eval_paths, real_eval_labels), counts_info = get_stratified_dataset_splits(seed=42)
 
-    train_dataset = SafeStreetsDataset(train_paths, train_labels, is_train=True)
+    # 3x oversampling on real voice training data to balance with synthetic while providing dynamic augmentations
+    real_oversample_factor = 3
+    train_dataset = SafeStreetsDataset(train_paths, train_labels, is_train=True, real_oversample_factor=real_oversample_factor)
     val_dataset = SafeStreetsDataset(val_paths, val_labels, is_train=False)
-    test_dataset = SafeStreetsDataset(test_paths, test_labels, is_train=False)
+    synth_test_dataset = SafeStreetsDataset(synth_test_paths, synth_test_labels, is_train=False)
+    real_eval_dataset = SafeStreetsDataset(real_eval_paths, real_eval_labels, is_train=False)
 
     batch_size = 32
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    synth_test_loader = DataLoader(synth_test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    real_eval_loader = DataLoader(real_eval_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
     # 3. Initialize Model
     model = SafeStreetsVoiceNet(num_classes=4).to(device)
@@ -96,8 +179,8 @@ def main():
     print(f"Model Architecture: SafeStreetsVoiceNet")
     print(f"Total Trainable Parameters: {param_count:,}\n")
 
-    # 4. Loss & Optimizer (Slight penalty weight on HELP class)
-    class_weights = torch.tensor([1.2, 1.0, 1.0, 1.0], dtype=torch.float32).to(device)
+    # 4. Loss & Optimizer (Moderate weight penalty on HELP class to maintain sensitivity)
+    class_weights = torch.tensor([1.3, 1.0, 1.0, 1.0], dtype=torch.float32).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
@@ -112,7 +195,7 @@ def main():
     parent_metadata_path = os.path.join(parent_dir, "model_metadata.json")
 
     # 6. Training Loop
-    epochs = 30
+    epochs = 35
     best_val_loss = float('inf')
     best_val_acc = 0.0
 
@@ -125,7 +208,7 @@ def main():
     for epoch in range(1, epochs + 1):
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc, _, _ = evaluate_model(model, val_loader, criterion, device)
+        val_loss, val_acc, _, _ = evaluate_dataset_loader(model, val_loader, criterion, device)
 
         scheduler.step(val_loss)
         elapsed = time.time() - t0
@@ -142,7 +225,7 @@ def main():
             "val_acc": val_acc
         })
 
-        # Save best model checkpoint
+        # Save best model checkpoint based on validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_val_acc = val_acc
@@ -156,61 +239,89 @@ def main():
     print("-" * 60)
     print(f"Training Complete in {total_training_time:.2f} seconds.")
 
-    # 7. Test Set Evaluation
-    print("\nLoading Best Model Checkpoint for Standard Test Set Evaluation...")
+    # Load best model checkpoint for evaluation
+    print("\nLoading Best Model Checkpoint for Final Comprehensive Evaluation...")
     model.load_state_dict(torch.load(model_save_path))
-    test_loss, test_acc, y_true, y_pred = evaluate_model(model, test_loader, criterion, device)
 
-    # Metrics per class
     target_names = ["HELP", "UNKNOWN", "NOISE", "SILENCE"]
-    report_dict = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
-    report_str = classification_report(y_true, y_pred, target_names=target_names, digits=4)
 
-    cm = confusion_matrix(y_true, y_pred)
+    # =========================================================================
+    # 7A. SYNTHETIC TEST SET EVALUATION
+    # =========================================================================
+    synth_loss, synth_acc, synth_y_true, synth_y_pred = evaluate_dataset_loader(model, synth_test_loader, criterion, device)
+    synth_report_dict = classification_report(synth_y_true, synth_y_pred, target_names=target_names, output_dict=True, zero_division=0)
+    synth_report_str = classification_report(synth_y_true, synth_y_pred, target_names=target_names, digits=4, zero_division=0)
+    synth_cm = confusion_matrix(synth_y_true, synth_y_pred, labels=[0, 1, 2, 3])
 
-    help_idx = 0
-    help_actual_total = cm[help_idx].sum()
-    help_true_positives = cm[help_idx][help_idx]
-    help_false_negatives = help_actual_total - help_true_positives
+    s_help_total = synth_cm[0].sum()
+    s_help_tp = synth_cm[0][0]
+    s_help_fn = s_help_total - s_help_tp
+    s_fp_unknown = synth_cm[1][0]
+    s_fp_noise = synth_cm[2][0]
+    s_fp_silence = synth_cm[3][0]
+    s_total_fp = s_fp_unknown + s_fp_noise + s_fp_silence
 
-    fp_unknown_as_help = cm[1][0]
-    fp_noise_as_help = cm[2][0]
-    fp_silence_as_help = cm[3][0]
-    total_help_false_positives = fp_unknown_as_help + fp_noise_as_help + fp_silence_as_help
-
-    help_precision = report_dict["HELP"]["precision"]
-    help_recall = report_dict["HELP"]["recall"]
-
-    print("\n" + "=" * 60)
-    print("                  STANDARD TEST SET EVALUATION SUMMARY")
-    print("=" * 60)
-    print(f"Standard Test Accuracy : {test_acc * 100:.2f}%")
-    print(f"HELP Precision         : {help_precision * 100:.2f}%")
-    print(f"HELP Recall            : {help_recall * 100:.2f}%")
-    print(f"HELP False Negatives   : {help_false_negatives}/{help_actual_total}")
-    print(f"HELP False Positives   : {total_help_false_positives}")
-    print("-" * 60)
-
+    print("\n" + "=" * 65)
+    print("      EVALUATION A: SYNTHETIC TEST SET RESULTS")
+    print("=" * 65)
+    print(f"Overall Synthetic Test Accuracy : {synth_acc * 100:.2f}%")
+    print(f"HELP Precision                  : {synth_report_dict['HELP']['precision'] * 100:.2f}%")
+    print(f"HELP Recall                     : {synth_report_dict['HELP']['recall'] * 100:.2f}%")
+    print(f"HELP False Negatives (Missed)   : {s_help_fn} / {s_help_total}")
+    print(f"HELP False Positives (Alarms)   : {s_total_fp}")
+    print(f"  - UNKNOWN -> HELP False Alarms: {s_fp_unknown}")
+    print(f"  - NOISE   -> HELP False Alarms: {s_fp_noise}")
+    print(f"  - SILENCE -> HELP False Alarms: {s_fp_silence}")
+    print("-" * 65)
     print("Classification Report:")
-    print(report_str)
-
+    print(synth_report_str)
     print("\nConfusion Matrix:")
     print("                 Predicted")
     print("                 HELP  UNKNOWN  NOISE  SILENCE")
-    for idx, row in enumerate(cm):
+    for idx, row in enumerate(synth_cm):
         print(f"Actual {target_names[idx]:<8}: {row[0]:<5} {row[1]:<8} {row[2]:<6} {row[3]:<7}")
 
-    print("\n" + "-" * 60)
-    print("            HELP CLASS SAFETY AUDIT & CRITICAL METRICS")
-    print("-" * 60)
-    print(f"Actual HELP Samples in Test Set: {help_actual_total}")
-    print(f"Correctly Triggered HELP (True Positives) : {help_true_positives}/{help_actual_total} ({help_true_positives/max(1, help_actual_total)*100:.2f}%)")
-    print(f"Missed HELP Emergencies (False Negatives)  : {help_false_negatives}/{help_actual_total}")
-    print(f"Total False HELP Triggers (False Positives): {total_help_false_positives}")
-    print(f"  - Normal Speech (UNKNOWN) -> HELP False Alarms: {fp_unknown_as_help}")
-    print(f"  - Background Noise        -> HELP False Alarms: {fp_noise_as_help}")
-    print(f"  - Silence                 -> HELP False Alarms: {fp_silence_as_help}")
+    # =========================================================================
+    # 7B. HELD-OUT REAL-WORLD TEST SET EVALUATION
+    # =========================================================================
+    real_eval_loss, real_eval_acc, real_y_true, real_y_pred = evaluate_dataset_loader(model, real_eval_loader, criterion, device)
+    real_eval_report_dict = classification_report(real_y_true, real_y_pred, target_names=target_names, output_dict=True, zero_division=0)
+    real_eval_report_str = classification_report(real_y_true, real_y_pred, target_names=target_names, digits=4, zero_division=0)
+    real_eval_cm = confusion_matrix(real_y_true, real_y_pred, labels=[0, 1, 2, 3])
 
+    r_help_total = real_eval_cm[0].sum()
+    r_help_tp = real_eval_cm[0][0]
+    r_help_fn = r_help_total - r_help_tp
+    r_fp_unknown = real_eval_cm[1][0]
+    r_fp_noise = real_eval_cm[2][0]
+    r_fp_silence = real_eval_cm[3][0]
+    r_total_fp = r_fp_unknown + r_fp_noise + r_fp_silence
+
+    print("\n" + "=" * 65)
+    print("      EVALUATION B: HELD-OUT REAL-WORLD TEST SET RESULTS (65 Files)")
+    print("=" * 65)
+    print(f"Overall Real Held-Out Accuracy  : {real_eval_acc * 100:.2f}%")
+    print(f"HELP Recall                     : {real_eval_report_dict['HELP']['recall'] * 100:.2f}%")
+    print(f"HELP False Negatives (Missed)   : {r_help_fn} / {r_help_total}")
+    print(f"Total False Alarms for HELP     : {r_total_fp}")
+    print(f"  - UNKNOWN -> HELP False Alarms: {r_fp_unknown}")
+    print(f"  - NOISE   -> HELP False Alarms: {r_fp_noise}")
+    print(f"  - SILENCE -> HELP False Alarms: {r_fp_silence}")
+    print("-" * 65)
+    print("Classification Report:")
+    print(real_eval_report_str)
+    print("\nConfusion Matrix:")
+    print("                 Predicted")
+    print("                 HELP  UNKNOWN  NOISE  SILENCE")
+    for idx, row in enumerate(real_eval_cm):
+        print(f"Actual {target_names[idx]:<8}: {row[0]:<5} {row[1]:<8} {row[2]:<6} {row[3]:<7}")
+
+    # =========================================================================
+    # 7C. ORIGINAL 6 UNTOUCHED REAL HELP RECORDINGS EVALUATION
+    # =========================================================================
+    untouched_results = evaluate_untouched_real_help_files(model, device)
+
+    # 8. Save Metadata JSON
     model_file_size_kb = os.path.getsize(model_save_path) / 1024.0
 
     metadata = {
@@ -220,6 +331,7 @@ def main():
         "inv_class_map": {str(k): v for k, v in CLASS_MAP.items()},
         "parameters_count": param_count,
         "model_file_size_kb": round(model_file_size_kb, 2),
+        "real_oversample_factor": real_oversample_factor,
         "audio_specs": {
             "sample_rate": 16000,
             "channels": 1,
@@ -230,22 +342,39 @@ def main():
             "feature_shape": [1, 64, 101]
         },
         "dataset_split": counts_info,
-        "test_results": {
-            "test_loss": float(test_loss),
-            "test_accuracy": float(test_acc),
-            "classification_report": report_dict,
-            "confusion_matrix": cm.tolist(),
+        "synthetic_test_results": {
+            "test_loss": float(synth_loss),
+            "test_accuracy": float(synth_acc),
+            "classification_report": synth_report_dict,
+            "confusion_matrix": synth_cm.tolist(),
             "help_safety_metrics": {
-                "help_precision": float(help_precision),
-                "help_recall": float(help_recall),
-                "help_true_positives": int(help_true_positives),
-                "help_false_negatives": int(help_false_negatives),
-                "help_false_positives": int(total_help_false_positives),
-                "fp_unknown_as_help": int(fp_unknown_as_help),
-                "fp_noise_as_help": int(fp_noise_as_help),
-                "fp_silence_as_help": int(fp_silence_as_help)
+                "help_precision": float(synth_report_dict["HELP"]["precision"]),
+                "help_recall": float(synth_report_dict["HELP"]["recall"]),
+                "help_true_positives": int(s_help_tp),
+                "help_false_negatives": int(s_help_fn),
+                "help_false_positives": int(s_total_fp),
+                "fp_unknown_as_help": int(s_fp_unknown),
+                "fp_noise_as_help": int(s_fp_noise),
+                "fp_silence_as_help": int(s_fp_silence)
             }
-        }
+        },
+        "held_out_real_test_results": {
+            "test_loss": float(real_eval_loss),
+            "test_accuracy": float(real_eval_acc),
+            "classification_report": real_eval_report_dict,
+            "confusion_matrix": real_eval_cm.tolist(),
+            "help_safety_metrics": {
+                "help_precision": float(real_eval_report_dict["HELP"]["precision"]),
+                "help_recall": float(real_eval_report_dict["HELP"]["recall"]),
+                "help_true_positives": int(r_help_tp),
+                "help_false_negatives": int(r_help_fn),
+                "help_false_positives": int(r_total_fp),
+                "fp_unknown_as_help": int(r_fp_unknown),
+                "fp_noise_as_help": int(r_fp_noise),
+                "fp_silence_as_help": int(r_fp_silence)
+            }
+        },
+        "untouched_6_real_help_results": untouched_results
     }
 
     with open(metadata_save_path, "w") as f:

@@ -776,6 +776,47 @@ export function calculateAggregatedHistoricalRisk(predictions) {
   return Math.min(100, Math.round(aggregated * 10) / 10);
 }
 
+// ============================================================
+// VALIDATION & CONFIDENCE MULTIPLIERS FOR COMMUNITY REPORTS
+// ============================================================
+
+export function getValidationStatusMultiplier(report) {
+  if (!report) return 0.0;
+
+  const status = String(report.status || "").toUpperCase();
+  const corrCount = Number(report.corroboration_count || 0);
+  const hasEvidence = Boolean(report.has_evidence || report.evidence_url || report.verified);
+
+  // 1. Stale / Expired check:
+  // If report is > 24 hours old with 0 corroborations, or status is EXPIRED -> 0.0x weight
+  const dateVal = report.created_at || report.created_date;
+  if (status === "EXPIRED") return 0.0;
+  if (dateVal && status === "PROVISIONAL") {
+    try {
+      const repDate = new Date(dateVal);
+      if (!isNaN(repDate.getTime())) {
+        const ageHours = (Date.now() - repDate.getTime()) / (1000 * 60 * 60);
+        if (ageHours > 24 && corrCount === 0) {
+          return 0.0; // Stale report risk decays completely
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Verified / Evidence-Backed -> Strongest positive safety-score contribution (3.0x multiplier)
+  if (hasEvidence || status === "VERIFIED") {
+    return 3.0;
+  }
+
+  // 3. Corroborated -> Positive safety-score contribution (1.5x to 2.5x based on peer corroboration count)
+  if (status === "CORROBORATED" || corrCount > 0) {
+    return Math.min(2.5, 1.5 + 0.2 * corrCount);
+  }
+
+  // 4. Default PROVISIONAL / UNVERIFIED -> 0.0x (MUST NOT affect safety score until validated/corroborated)
+  return 0.0;
+}
+
 
 // ============================================================
 // MAIN SAFETY SCORE ENGINE
@@ -857,9 +898,10 @@ export async function calculateSafetyScoreEngine(analysisResult) {
     );
 
     const ageMult = getReportAgeMultiplier(rep);
+    const confidenceMult = getValidationStatusMultiplier(rep);
 
     const reportRisk =
-      baseWeight * ratingMult * distMult * timeMult * ageMult;
+      baseWeight * ratingMult * distMult * timeMult * ageMult * confidenceMult;
 
     communityRiskTotal += reportRisk;
 
@@ -871,6 +913,7 @@ export async function calculateSafetyScoreEngine(analysisResult) {
       distMult,
       timeMult,
       ageMult,
+      confidenceMult,
       impact: Math.round(reportRisk * 10) / 10
     });
 
@@ -900,9 +943,10 @@ export async function calculateSafetyScoreEngine(analysisResult) {
     );
 
     const ageMult = getReportAgeMultiplier(rep);
+    const confidenceMult = getValidationStatusMultiplier(rep);
 
     const reportRisk =
-      baseWeight * ratingMult * distMult * timeMult * ageMult;
+      baseWeight * ratingMult * distMult * timeMult * ageMult * confidenceMult;
 
     communityRiskTotal += reportRisk;
 
@@ -914,6 +958,7 @@ export async function calculateSafetyScoreEngine(analysisResult) {
       distMult,
       timeMult,
       ageMult,
+      confidenceMult,
       impact: Math.round(reportRisk * 10) / 10
     });
 
@@ -922,6 +967,7 @@ export async function calculateSafetyScoreEngine(analysisResult) {
       impact: Math.abs(reportRisk)
     });
   });
+
 
   // Bounded soft saturation: C = 100 * (S_net / (S_net + 40)) if S_net > 0, else 0
   const rawNetCommunityRisk = Math.max(0, communityRiskTotal);

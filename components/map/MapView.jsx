@@ -115,8 +115,8 @@ function MapController({ center, zoom, from, to, recenterOnUser, flyToTarget, on
 
   // Fit bounds ONCE when a route (from & to) is set or changed
   useEffect(() => {
-    if (from && to) {
-      const routeKey = `${from[0]},${from[1]}-${to[0]},${to[1]}`;
+    if (from && to && Array.isArray(from) && Array.isArray(to)) {
+      const routeKey = `${Number(from[0]).toFixed(4)},${Number(from[1]).toFixed(4)}-${Number(to[0]).toFixed(4)},${Number(to[1]).toFixed(4)}`;
       if (prevRouteKey.current !== routeKey) {
         prevRouteKey.current = routeKey;
         const bounds = L.latLngBounds([from, to]);

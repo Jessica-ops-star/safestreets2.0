@@ -267,7 +267,7 @@ export default function ReportForm({ onSubmit, onCancel }) {
       finalLat = Number(currentLat);
       finalLon = Number(currentLon);
       const resolvedGeo = await reverseGeocodeAddress(finalLat, finalLon);
-      finalLocationName = resolvedGeo || `Current GPS (${finalLat.toFixed(4)}, ${finalLon.toFixed(4)})`;
+      finalLocationName = resolvedGeo || `Lat: ${finalLat.toFixed(4)}, Lon: ${finalLon.toFixed(4)}`;
     } else {
       // Manual address mode
       if (!manualAddress || !manualAddress.trim()) {
@@ -295,7 +295,12 @@ export default function ReportForm({ onSubmit, onCancel }) {
 
       finalLat = Number(lat);
       finalLon = Number(lon);
-      finalLocationName = addr || manualAddress.trim();
+      if (!addr || addr.toLowerCase().startsWith("lat:")) {
+        const resolvedGeo = await reverseGeocodeAddress(finalLat, finalLon);
+        finalLocationName = resolvedGeo || addr || manualAddress.trim() || `Lat: ${finalLat.toFixed(4)}, Lon: ${finalLon.toFixed(4)}`;
+      } else {
+        finalLocationName = addr || manualAddress.trim();
+      }
     }
 
     if (!finalLat || !finalLon || isNaN(finalLat) || isNaN(finalLon)) {

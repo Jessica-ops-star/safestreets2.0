@@ -64,9 +64,10 @@ export default function NearbyValidationCard({ report, currentUser, userLocation
     setLoading(true);
 
     try {
-      const updated = await corroborateReport(currentReport.id, responseType, textNote);
+      const res = await corroborateReport(currentReport.id, responseType, textNote);
+      const updatedReportObj = res?.report || res;
       setHasResponded(true);
-      setCurrentReport(updated || currentReport);
+      setCurrentReport(updatedReportObj || currentReport);
 
       if (responseType === "SIMILAR") {
         setSuccessMsg("Positive corroboration recorded. Thank you for contributing to community safety!");
@@ -79,7 +80,7 @@ export default function NearbyValidationCard({ report, currentUser, userLocation
       }
 
       if (onCorroborated) {
-        onCorroborated(updated || currentReport);
+        onCorroborated(updatedReportObj || currentReport);
       }
     } catch (err) {
       console.warn("Corroboration error:", err);

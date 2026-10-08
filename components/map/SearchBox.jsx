@@ -60,6 +60,10 @@ export default function SearchBox({
     onSelect({
       label: item.display_name,
       coords: [parseFloat(item.lat), parseFloat(item.lon)],
+      isCoordinates: item.isCoordinates || false,
+      precision: item.precision || "street",
+      precisionLabel: item.precisionLabel || "Destination found at street level",
+      rawItem: item
     });
   };
 
@@ -84,6 +88,12 @@ export default function SearchBox({
           onFocus={() => setIsFocused(true)}
           onBlur={() => setTimeout(() => setIsFocused(false), 200)}
           onChange={handleInputChange}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && suggestions.length > 0) {
+              e.preventDefault();
+              handleSelectSuggestion(suggestions[0]);
+            }
+          }}
           placeholder={placeholder}
         />
         {loading && <div className="absolute right-3 top-2.5 text-xs text-slate-400 animate-pulse">Searching...</div>}
@@ -107,18 +117,35 @@ export default function SearchBox({
               Use Current Live Location
             </button>
           )}
-          {suggestions.map((item) => (
+          {suggestions.map((item, idx) => (
             <button
-              key={`${item.place_id}`}
+              key={`${item.place_id || idx}`}
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
                 handleSelectSuggestion(item);
               }}
               onClick={() => handleSelectSuggestion(item)}
-              className="w-full text-left px-3.5 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+              className="w-full text-left px-3.5 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer flex items-center justify-between gap-2"
             >
-              {item.display_name}
+              <span className="truncate">{item.display_name}</span>
+              {item.isCoordinates ? (
+                <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full shrink-0">
+                  Coordinates
+                </span>
+              ) : item.precision === "exact" ? (
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full shrink-0">
+                  Exact Address
+                </span>
+              ) : item.precision === "street" ? (
+                <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full shrink-0">
+                  Street Level
+                </span>
+              ) : (
+                <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full shrink-0">
+                  Area Level
+                </span>
+              )}
             </button>
           ))}
         </div>

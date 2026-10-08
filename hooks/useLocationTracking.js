@@ -311,12 +311,77 @@ export function useLocationTracking() {
     }
   }, []);
 
+  const watchIdRef = useRef(null);
+  const [isNavigatingTracking, setIsNavigatingTracking] = useState(false);
+
+  /**
+   * Start continuous real-time GPS watchPosition for active navigation.
+   */
+  const startActiveNavigationWatch = useCallback((onUpdate, onError) => {
+    stopActiveNavigationWatch();
+
+    if (typeof window === "undefined" || !navigator.geolocation) {
+      const errMessage = "Geolocation is not supported by your browser.";
+      setError(errMessage);
+      setPermissionStatus("unsupported");
+      if (onError) onError(errMessage);
+      return;
+    }
+
+    setIsNavigatingTracking(true);
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        const locData = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          timestamp: position.timestamp || Date.now(),
+        };
+        setLocation(locData);
+        setPermissionStatus("granted");
+        setError(null);
+        if (onUpdate) onUpdate(locData);
+      },
+      (err) => {
+        let message = "Unable to retrieve real-time GPS location.";
+        if (err.code === err.PERMISSION_DENIED) {
+          message = "Location permission denied. Please allow location access in browser settings.";
+          setPermissionStatus("denied");
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          message = "GPS position unavailable on device.";
+        } else if (err.code === err.TIMEOUT) {
+          message = "GPS location request timed out.";
+        }
+        setError(message);
+        if (onError) onError(message);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      }
+    );
+  }, []);
+
+  /**
+   * Stop continuous active navigation GPS watch.
+   */
+  const stopActiveNavigationWatch = useCallback(() => {
+    if (watchIdRef.current !== null && typeof navigator !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    setIsNavigatingTracking(false);
+  }, []);
+
   // Cleanup on unmount to prevent memory leaks
   useEffect(() => {
     return () => {
       stopTracking();
+      stopActiveNavigationWatch();
     };
-  }, [stopTracking]);
+  }, [stopTracking, stopActiveNavigationWatch]);
 
   return {
     location,
@@ -325,6 +390,7 @@ export function useLocationTracking() {
     loading,
     error,
     lastSavedAt,
+    isNavigatingTracking,
     requestLocationPermission,
     getCurrentLocation,
     reverseGeocode,
@@ -332,5 +398,7 @@ export function useLocationTracking() {
     updateCompleteLocation,
     startTracking,
     stopTracking,
+    startActiveNavigationWatch,
+    stopActiveNavigationWatch,
   };
 }

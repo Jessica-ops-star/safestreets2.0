@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card.jsx";
 import { Button } from "@/components/ui/button.jsx";
 import { 
@@ -10,7 +10,11 @@ import {
   AlertCircle,
   ArrowRight,
   Compass,
-  Locate
+  Locate,
+  StopCircle,
+  CheckCircle2,
+  Radio,
+  Navigation2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -23,10 +27,12 @@ import SearchBox from "../components/map/SearchBox.jsx";
 
 import { evaluateAllRoutes, getFastestRoute, getSafestRoute } from "../services/routing";
 import { getCommunityReports, getSafetyData } from "../services/supabaseService";
-import { monitorRouteDeviation } from "../services/routeDeviationService";
+import { monitorRouteDeviation, calculateRouteProgress } from "../services/routeDeviationService";
 import { analyzeRouteSafetyData } from "../services/routeSafetyAnalysis";
 import { calculateSafetyScoreEngine } from "../services/safetyScoreEngine";
 import { getTrustedPlaces } from "../services/trustedPlacesService";
+import { geocodeAddress } from "../services/geocoding";
+import { useLocationTracking } from "../hooks/useLocationTracking";
 
 export default function SafeNavigation() {
   const [origin, setOrigin] = useState({ label: "", coords: null });
@@ -40,6 +46,25 @@ export default function SafeNavigation() {
   const [safetyError, setSafetyError] = useState("");
   const [deviationAlert, setDeviationAlert] = useState("");
   const [reportAlert, setReportAlert] = useState("");
+  const [searchError, setSearchError] = useState("");
+  const [ambiguousCandidates, setAmbiguousCandidates] = useState([]);
+  const routingRequestIdRef = useRef(0);
+
+  // Active Real-Time Navigation & Geometry Preservation State
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [activeNavigationRoute, setActiveNavigationRoute] = useState(null);
+  const [navigationStatus, setNavigationStatus] = useState("idle"); // idle | active | off_route | arrived | error
+  const [currentProgress, setCurrentProgress] = useState({
+    remainingDistanceMeters: 0,
+    remainingDurationSeconds: 0,
+    remainingDistanceLabel: "",
+    remainingDurationLabel: "",
+    isNearDestination: false
+  });
+  const [currentLocationDetails, setCurrentLocationDetails] = useState(null);
+  const [navigationError, setNavigationError] = useState("");
+
+  const { startActiveNavigationWatch, stopActiveNavigationWatch } = useLocationTracking();
 
   // Trusted Places State for Map Layer
   const [trustedPlaces, setTrustedPlaces] = useState([]);
@@ -51,6 +76,26 @@ export default function SafeNavigation() {
   const [flyToTarget, setFlyToTarget] = useState(null);
   const [recenterOnUser, setRecenterOnUser] = useState(true);
   const [isUserInteracting, setIsUserInteracting] = useState(false);
+
+  // Persistent refs to avoid closure stale state in watchPosition callbacks
+  const routesRef = useRef(routes);
+  const selectedRouteRef = useRef(selectedRoute);
+  const destinationRef = useRef(destination);
+  const safetyDataRef = useRef(safetyData);
+  const communityReportsRef = useRef(communityReports);
+  const navigationStatusRef = useRef(navigationStatus);
+  const isNavigatingRef = useRef(isNavigating);
+  const activeNavigationRouteRef = useRef(activeNavigationRoute);
+  const lastGpsLogRef = useRef(0);
+
+  useEffect(() => { routesRef.current = routes; }, [routes]);
+  useEffect(() => { selectedRouteRef.current = selectedRoute; }, [selectedRoute]);
+  useEffect(() => { destinationRef.current = destination; }, [destination]);
+  useEffect(() => { safetyDataRef.current = safetyData; }, [safetyData]);
+  useEffect(() => { communityReportsRef.current = communityReports; }, [communityReports]);
+  useEffect(() => { navigationStatusRef.current = navigationStatus; }, [navigationStatus]);
+  useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
+  useEffect(() => { activeNavigationRouteRef.current = activeNavigationRoute; }, [activeNavigationRoute]);
 
   // 1. Load Trusted Places from Supabase
   const loadTrustedPlacesData = async () => {
@@ -77,12 +122,14 @@ export default function SafeNavigation() {
       const coords = [parseFloat(lat), parseFloat(lon)];
       setDestination({
         label: label ? decodeURIComponent(label) : "Trusted Place",
-        coords
+        coords,
+        precision: "exact",
+        precisionLabel: "Exact address found"
       });
     }
   }, []);
 
-  // Initial live location fetch & continuous watchPosition for Origin
+  // Initial live location fetch & background watchPosition for Origin
   useEffect(() => {
     if (!navigator.geolocation) return;
 
@@ -92,6 +139,12 @@ export default function SafeNavigation() {
         const { latitude, longitude } = position.coords;
         const coords = [latitude, longitude];
         setUserLiveCoords(coords);
+        setCurrentLocationDetails({
+          currentLatitude: latitude,
+          currentLongitude: longitude,
+          accuracy: position.coords.accuracy,
+          timestamp: position.timestamp || Date.now()
+        });
         setOrigin((prev) => ({
           label: prev.label || "Live Location",
           coords: prev.coords || coords,
@@ -103,18 +156,27 @@ export default function SafeNavigation() {
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
     );
 
-    // Continuous watchPosition for live origin updates in the background
+    // Background watchPosition updates ONLY when not actively navigating to prevent mutating origin.coords during navigation
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
-        const { latitude, longitude } = position.coords;
+        const { latitude, longitude, accuracy } = position.coords;
         const coords = [latitude, longitude];
         setUserLiveCoords(coords);
-        setOrigin((prev) => {
-          if (!prev.label || prev.label === "Live Location" || prev.label === "Current Location" || prev.label === "Auto-detected location") {
-            return { label: "Live Location", coords };
-          }
-          return prev;
+        setCurrentLocationDetails({
+          currentLatitude: latitude,
+          currentLongitude: longitude,
+          accuracy,
+          timestamp: position.timestamp || Date.now()
         });
+
+        if (!isNavigatingRef.current) {
+          setOrigin((prev) => {
+            if (!prev.label || prev.label === "Live Location" || prev.label === "Current Location" || prev.label === "Auto-detected location") {
+              return { label: "Live Location", coords };
+            }
+            return prev;
+          });
+        }
       },
       (error) => {
         console.warn("Live geolocation watch warning:", error);
@@ -132,6 +194,12 @@ export default function SafeNavigation() {
       navigator.geolocation.getCurrentPosition((pos) => {
         const coords = [pos.coords.latitude, pos.coords.longitude];
         setUserLiveCoords(coords);
+        setCurrentLocationDetails({
+          currentLatitude: pos.coords.latitude,
+          currentLongitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          timestamp: pos.timestamp || Date.now()
+        });
         setOrigin({ label: "Live Location", coords });
       });
     }
@@ -157,7 +225,8 @@ export default function SafeNavigation() {
       const statusLabel = event?.detail?.report?.status || "unverified";
       setReportAlert(`⚠️ Safe Route updated in real-time due to a nearby ${statusLabel.toLowerCase()} safety report.`);
 
-      if (origin.coords && destination.coords) {
+      // Only recalculate automatically if NOT actively navigating
+      if (!isNavigatingRef.current && origin.coords && destination.coords) {
         await calculateRouteWithCoords(origin.coords, destination.coords);
       }
     };
@@ -165,23 +234,6 @@ export default function SafeNavigation() {
     window.addEventListener("community-report-updated", handleReportUpdated);
     return () => window.removeEventListener("community-report-updated", handleReportUpdated);
   }, [origin.coords, destination.coords]);
-
-  useEffect(() => {
-    if (!origin.coords || !destination.coords || !routes?.safest) return;
-
-    const watchId = navigator.geolocation?.watchPosition(
-      (position) => {
-        const alert = monitorRouteDeviation([position.coords.latitude, position.coords.longitude], routes?.safest ?? routes?.fastest);
-        if (alert?.warning) {
-          setDeviationAlert(alert.message);
-        }
-      },
-      () => {},
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 10000 }
-    );
-
-    return () => navigator.geolocation?.clearWatch(watchId);
-  }, [origin.coords, destination.coords, routes]);
 
   const loadSafetyContext = async () => {
     setSafetyLoading(true);
@@ -202,8 +254,7 @@ export default function SafeNavigation() {
   const calculateRouteWithCoords = async (srcCoords, destCoords, srcLabel = "", destLabel = "") => {
     if (!srcCoords || !destCoords) return;
     
-    // Invalidate previous route state to prevent old route from persisting across destination changes
-    setRoutes(null);
+    const reqId = ++routingRequestIdRef.current;
     setLoading(true);
     setRecenterOnUser(false);
     setIsUserInteracting(false);
@@ -218,6 +269,7 @@ export default function SafeNavigation() {
           getSafetyData(),
           getCommunityReports()
         ]);
+        if (reqId !== routingRequestIdRef.current) return;
         setSafetyData(activeSafetyData);
         setCommunityReports(activeCommunityReports);
       }
@@ -231,21 +283,261 @@ export default function SafeNavigation() {
       const toObj = { label: destLabel || destination.label || "Destination", coords: destCoords };
 
       const routeResults = await evaluateAllRoutes(fromObj, toObj, safetyContext);
+      
+      if (reqId !== routingRequestIdRef.current) {
+        console.log("[ROUTING] Discarded stale route calculation for request ID:", reqId);
+        return;
+      }
+
       setRoutes(routeResults);
-      setSelectedRoute("safest");
+
+      const newChosen = selectedRoute === "fastest" 
+        ? (routeResults.fastest ?? routeResults.safest) 
+        : (routeResults.safest ?? routeResults.fastest);
+
+      if (isNavigatingRef.current && newChosen) {
+        setActiveNavigationRoute(newChosen);
+        activeNavigationRouteRef.current = newChosen;
+      }
+
+      // Requirement 9 Debug Logging
+      console.log("\n==================================");
+      console.log("[ROUTE GENERATED]");
+      console.log(`- mode: ${selectedRoute.toUpperCase()}`);
+      console.log(`- origin:`, srcCoords);
+      console.log(`- destination:`, destCoords);
+      console.log(`- geometry points: ${routeResults.safest?.path?.length || routeResults.fastest?.path?.length || 0}`);
+      console.log(`- distance: ${routeResults.safest?.distance || routeResults.fastest?.distance}`);
+      console.log(`- duration: ${routeResults.safest?.duration || routeResults.fastest?.duration}`);
+      console.log("==================================\n");
+
     } catch (error) {
-      console.error("Routing error:", error);
+      if (reqId === routingRequestIdRef.current) {
+        console.error("Routing error:", error);
+        setSearchError("Unable to generate routes for specified locations.");
+      }
     } finally {
-      setLoading(false);
+      if (reqId === routingRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   const handleRouteCalculation = async () => {
-    if (!origin.coords || !destination.coords) return;
-    await calculateRouteWithCoords(origin.coords, destination.coords, origin.label, destination.label);
+    setSearchError("");
+    setAmbiguousCandidates([]);
+
+    let srcCoords = origin.coords;
+    let srcLabel = origin.label;
+    let destCoords = destination.coords;
+    let destLabel = destination.label;
+
+    setLoading(true);
+
+    try {
+      // 1. Resolve Origin if coords missing but label is present
+      if (!srcCoords && srcLabel && srcLabel.trim().length >= 2) {
+        const geoSrc = await geocodeAddress(srcLabel);
+        if (geoSrc) {
+          srcCoords = [geoSrc.latitude, geoSrc.longitude];
+          srcLabel = geoSrc.address;
+          setOrigin({ label: srcLabel, coords: srcCoords });
+        } else {
+          setSearchError("Origin location not found. Please check spelling or select Live Location.");
+          setLoading(false);
+          return;
+        }
+      }
+
+      // 2. Resolve Destination if coords missing but label is present
+      if (!destCoords && destLabel && destLabel.trim().length >= 2) {
+        const geoDest = await geocodeAddress(destLabel);
+        if (geoDest) {
+          destCoords = [geoDest.latitude, geoDest.longitude];
+          destLabel = geoDest.address;
+          setDestination({ 
+            label: destLabel, 
+            coords: destCoords,
+            precision: geoDest.precision,
+            precisionLabel: geoDest.precisionLabel
+          });
+
+          if (geoDest.results && geoDest.results.length > 1) {
+            setAmbiguousCandidates(geoDest.results);
+          }
+        } else {
+          setSearchError(`Location not found for "${destLabel}". Please check spelling or enter coordinates (e.g. 13.0215, 80.1746).`);
+          setLoading(false);
+          return;
+        }
+      }
+
+      if (!srcCoords || !destCoords) {
+        setSearchError("Please specify both Origin and Destination locations.");
+        setLoading(false);
+        return;
+      }
+
+      await calculateRouteWithCoords(srcCoords, destCoords, srcLabel, destLabel);
+    } catch (err) {
+      console.error("Error resolving routing locations:", err);
+      setSearchError("An error occurred while resolving location search.");
+      setLoading(false);
+    }
   };
 
-  // Auto-calculate route when destination is supplied via URL query parameters (e.g. from Emergency page)
+  // Reroute using user's current GPS position when off-route (Requirement 5, 9, 10)
+  const handleRerouteFromCurrentPosition = async (currentCoords, destCoords, currentRouteMode) => {
+    if (!currentCoords || !destCoords) return;
+
+    const reqId = ++routingRequestIdRef.current;
+
+    try {
+      const safetyContext = {
+        safetyData: safetyDataRef.current || [],
+        communityReports: communityReportsRef.current || []
+      };
+
+      const fromObj = { label: "Current GPS Position", coords: currentCoords };
+      const toObj = { label: destinationRef.current?.label || "Destination", coords: destCoords };
+
+      const routeResults = await evaluateAllRoutes(fromObj, toObj, safetyContext);
+
+      if (reqId !== routingRequestIdRef.current) return;
+
+      const newRouteCandidate = currentRouteMode === "fastest" 
+        ? (routeResults.fastest ?? routeResults.safest) 
+        : (routeResults.safest ?? routeResults.fastest);
+
+      // ONLY replace active route geometry AFTER new route calculation succeeds
+      if (newRouteCandidate?.path?.length > 0) {
+        setRoutes(routeResults);
+        setActiveNavigationRoute(newRouteCandidate);
+        activeNavigationRouteRef.current = newRouteCandidate;
+        setNavigationStatus("active");
+        setDeviationAlert("✓ Route recalculated from your current position.");
+        setTimeout(() => setDeviationAlert(""), 4000);
+      }
+    } catch (err) {
+      if (reqId === routingRequestIdRef.current) {
+        console.error("Rerouting failed:", err);
+        setNavigationError("Rerouting attempt failed. Continuing on current route.");
+      }
+    }
+  };
+
+  // Start Navigation Tracking Lifecycle (Requirement 1, 2, 3, 4, 5, 9, 11, 13)
+  const startNavigation = () => {
+    if (!routes || (!routes.safest && !routes.fastest)) {
+      alert("Please calculate a route first before pressing START.");
+      return;
+    }
+
+    const chosenRoute = selectedRoute === "fastest" 
+      ? (routes.fastest ?? routes.safest) 
+      : (routes.safest ?? routes.fastest);
+
+    if (!chosenRoute || !chosenRoute.path || chosenRoute.path.length === 0) {
+      alert("Invalid route geometry. Please recalculate route.");
+      return;
+    }
+
+    setNavigationError("");
+    setSearchError("");
+    setIsNavigating(true);
+    isNavigatingRef.current = true;
+    setNavigationStatus("active");
+    setActiveNavigationRoute(chosenRoute);
+    activeNavigationRouteRef.current = chosenRoute;
+
+    // Requirement 9 Debug Logging
+    console.log("\n==================================");
+    console.log("[NAVIGATION START]");
+    console.log(`- selected route exists: ${Boolean(chosenRoute)}`);
+    console.log(`- selected route geometry exists: ${Boolean(chosenRoute?.path?.length)}`);
+    console.log(`- geometry points: ${chosenRoute?.path?.length || 0}`);
+    console.log(`- mode: ${selectedRoute.toUpperCase()}`);
+    console.log("==================================\n");
+
+    const startCoords = userLiveCoords || origin.coords;
+    if (startCoords && chosenRoute) {
+      const prog = calculateRouteProgress(startCoords, chosenRoute);
+      setCurrentProgress(prog);
+      setRecenterOnUser(true);
+      setFlyToTarget({ coords: startCoords, key: Date.now() });
+    }
+
+    // Begin continuous high-accuracy watchPosition
+    startActiveNavigationWatch(
+      (locData) => {
+        const coords = [locData.latitude, locData.longitude];
+        setUserLiveCoords(coords);
+        setCurrentLocationDetails({
+          currentLatitude: locData.latitude,
+          currentLongitude: locData.longitude,
+          accuracy: locData.accuracy,
+          timestamp: locData.timestamp
+        });
+
+        // Requirement 9 Throttled GPS Debug Logging (every ~2.5 seconds)
+        const now = Date.now();
+        if (now - lastGpsLogRef.current >= 2500) {
+          lastGpsLogRef.current = now;
+          console.log(`[GPS UPDATE] current position: [${locData.latitude.toFixed(5)}, ${locData.longitude.toFixed(5)}] | accuracy: ±${Math.round(locData.accuracy)}m`);
+        }
+
+        const activeRouteCandidate = activeNavigationRouteRef.current || (selectedRouteRef.current === "fastest" 
+          ? (routesRef.current?.fastest ?? routesRef.current?.safest) 
+          : (routesRef.current?.safest ?? routesRef.current?.fastest));
+
+        if (!activeRouteCandidate) return;
+
+        // Progress Calculation (Requirement 8)
+        const prog = calculateRouteProgress(coords, activeRouteCandidate);
+        setCurrentProgress(prog);
+
+        // Destination Arrival Detection (Requirement 12)
+        if (prog.isNearDestination) {
+          setNavigationStatus("arrived");
+          setIsNavigating(false);
+          isNavigatingRef.current = false;
+          stopActiveNavigationWatch();
+          return;
+        }
+
+        // Off-Route Deviation Detection (Requirement 5 - 80m threshold)
+        const deviation = monitorRouteDeviation(coords, activeRouteCandidate, 80);
+        if (deviation?.warning) {
+          setNavigationStatus("off_route");
+          setDeviationAlert("⚠️ You are off route. Recalculating route from your current location...");
+
+          if (destinationRef.current?.coords) {
+            void handleRerouteFromCurrentPosition(coords, destinationRef.current.coords, selectedRouteRef.current);
+          }
+        } else if (navigationStatusRef.current === "off_route") {
+          setNavigationStatus("active");
+        }
+      },
+      (errMsg) => {
+        console.warn("GPS navigation tracking error:", errMsg);
+        setNavigationError(errMsg);
+        setNavigationStatus("error");
+      }
+    );
+  };
+
+  const stopNavigation = () => {
+    stopActiveNavigationWatch();
+    setIsNavigating(false);
+    isNavigatingRef.current = false;
+    setActiveNavigationRoute(null);
+    activeNavigationRouteRef.current = null;
+    setNavigationStatus("idle");
+    setDeviationAlert("");
+    setNavigationError("");
+  };
+
+  // Auto-calculate route when destination is supplied via URL query parameters
   useEffect(() => {
     if (origin.coords && destination.coords && !routes) {
       void calculateRouteWithCoords(origin.coords, destination.coords);
@@ -260,59 +552,59 @@ export default function SafeNavigation() {
     // Set destination inputs
     setDestination({
       label: `${place.place_name} (${place.formatted_address})`,
-      coords: placeCoords
+      coords: placeCoords,
+      precision: "exact",
+      precisionLabel: "Exact address found"
     });
 
     // Fly map camera to trusted place
     setFlyToTarget({ coords: placeCoords, key: Date.now() });
   };
 
-  const handleStartNavigationToTrustedPlace = async (place) => {
-    const placeCoords = [Number(place.latitude), Number(place.longitude)];
-    const srcCoords = origin.coords || userLiveCoords;
-
-    if (!srcCoords) {
-      alert("Please enable or select an Origin location to start navigation.");
-      return;
-    }
-
-    setDestination({
-      label: `${place.place_name} (${place.formatted_address})`,
-      coords: placeCoords
-    });
-
-    await calculateRouteWithCoords(srcCoords, placeCoords);
-  };
-
   const handleLocateMe = () => {
     handleShowLiveLocation();
-  };
-
-  const handleFastestRoute = () => {
-    const proceed = window.confirm(
-      "⚠️ PREDICTIVE WARNING\n\nThis route traverses areas with significantly higher incident rates.\n\nOur recommendation: Use the Safest Route.\n\nProceed anyway?"
-    );
-    if (proceed) setSelectedRoute("fastest");
-  };
-
-  const startNavigation = () => {
-    const routeName = selectedRoute === "safest" ? "Safest" : "Fastest";
-    alert(`Initiating ${routeName} Protocol. Navigation active.`);
   };
 
   const activeRoute = selectedRoute === "fastest" 
     ? (routes?.fastest ?? routes?.safest) 
     : (routes?.safest ?? routes?.fastest);
+
+  // Preserve route polylines persistently so map zoom, pan, and GPS updates NEVER clear geometry
+  const effectiveFastestPath = useMemo(() => {
+    if (routes?.fastest?.path && routes.fastest.path.length > 0) {
+      return routes.fastest.path;
+    }
+    if (activeNavigationRoute?.path && activeNavigationRoute.path.length > 0) {
+      if (selectedRoute === "fastest" || activeNavigationRoute.routeId === routes?.fastest?.routeId) {
+        return activeNavigationRoute.path;
+      }
+    }
+    return activeNavigationRoute?.path || [];
+  }, [routes, activeNavigationRoute, selectedRoute]);
+
+  const effectiveSafestPath = useMemo(() => {
+    if (routes?.safest?.path && routes.safest.path.length > 0) {
+      return routes.safest.path;
+    }
+    if (activeNavigationRoute?.path && activeNavigationRoute.path.length > 0) {
+      if (selectedRoute === "safest" || activeNavigationRoute.routeId === routes?.safest?.routeId) {
+        return activeNavigationRoute.path;
+      }
+    }
+    return activeNavigationRoute?.path || [];
+  }, [routes, activeNavigationRoute, selectedRoute]);
   
   const routeAnalysis = useMemo(() => {
-    if (!activeRoute) return null;
-    return activeRoute.routeAnalysis || analyzeRouteSafetyData(activeRoute, communityReports, safetyData);
-  }, [activeRoute, communityReports, safetyData]);
+    const routeForAnalysis = activeNavigationRoute || activeRoute;
+    if (!routeForAnalysis) return null;
+    return routeForAnalysis.routeAnalysis || analyzeRouteSafetyData(routeForAnalysis, communityReports, safetyData);
+  }, [activeNavigationRoute, activeRoute, communityReports, safetyData]);
 
   const safetyScoreResult = useMemo(() => {
-    if (!activeRoute) return null;
-    return activeRoute.scoreResult || (routeAnalysis ? calculateSafetyScoreEngine(routeAnalysis) : null);
-  }, [activeRoute, routeAnalysis]);
+    const routeForScore = activeNavigationRoute || activeRoute;
+    if (!routeForScore) return null;
+    return routeForScore.scoreResult || (routeAnalysis ? calculateSafetyScoreEngine(routeAnalysis) : null);
+  }, [activeNavigationRoute, activeRoute, routeAnalysis]);
 
   const emptyStateLabel = useMemo(() => {
     if (safetyLoading) return "Loading live safety data...";
@@ -328,7 +620,7 @@ export default function SafeNavigation() {
         <div>
           <div className="flex items-center gap-2 text-emerald-600 font-bold uppercase tracking-[0.2em] text-xs mb-3">
             <Compass className="w-4 h-4" />
-            Strategic Routing & Safety Anchors
+            Strategic Routing & Real-Time Tracking
           </div>
           <h1 className="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">
             Safe <span className="gradient-text">Navigation</span>
@@ -370,11 +662,9 @@ export default function SafeNavigation() {
                     label="Current Origin"
                     value={origin.label}
                     onChange={(val) => {
-                      setRoutes(null);
                       setOrigin({ label: val, coords: null });
                     }}
                     onSelect={(sel) => {
-                      setRoutes(null);
                       setOrigin(sel);
                     }}
                     onSelectLive={useLiveLocationAsOrigin}
@@ -403,22 +693,96 @@ export default function SafeNavigation() {
                     label="Final Destination"
                     value={destination.label}
                     onChange={(val) => {
-                      setRoutes(null);
+                      setSearchError("");
+                      setAmbiguousCandidates([]);
                       setDestination({ label: val, coords: null });
                     }}
                     onSelect={(sel) => {
-                      setRoutes(null);
+                      setSearchError("");
+                      setAmbiguousCandidates([]);
                       setDestination(sel);
                     }}
-                    placeholder="Where are you heading?"
+                    placeholder="Enter landmark, address or coordinates (e.g. 12/5, Mount Poonamallee Road, Chennai)"
                   />
                 </div>
+
+                {destination.coords && (
+                  <div className="flex items-center justify-between px-3 py-2 bg-white/80 border border-slate-200/80 rounded-xl text-xs shadow-2xs">
+                    <span className="text-slate-500 font-semibold">Destination Precision:</span>
+                    {destination.precision === "exact" ? (
+                      <span className="font-extrabold text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                        🎯 Exact address found
+                      </span>
+                    ) : destination.precision === "street" ? (
+                      <span className="font-extrabold text-blue-700 bg-blue-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                        🛣️ Destination found at street level
+                      </span>
+                    ) : (
+                      <span className="font-extrabold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                        🏙️ Destination found at area level
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
+
+              {ambiguousCandidates.length > 1 && (
+                <div className="rounded-2xl border border-blue-200 bg-blue-50/90 p-3 space-y-2 text-left">
+                  <div className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-blue-600 shrink-0" />
+                    Multiple candidate locations found. Select your destination:
+                  </div>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                    {ambiguousCandidates.slice(0, 4).map((cand, idx) => (
+                      <button
+                        key={cand.place_id || idx}
+                        type="button"
+                        onClick={() => {
+                          const coords = [parseFloat(cand.lat), parseFloat(cand.lon)];
+                          const label = cand.display_name;
+                          setDestination({ 
+                            label, 
+                            coords,
+                            precision: cand.precision || "street",
+                            precisionLabel: cand.precisionLabel || "Destination found at street level"
+                          });
+                          setAmbiguousCandidates([]);
+                          setSearchError("");
+                          calculateRouteWithCoords(origin.coords, coords, origin.label, label);
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs rounded-xl bg-white hover:bg-blue-100/60 border border-blue-100 text-slate-800 font-medium transition-colors flex items-start gap-2 cursor-pointer shadow-sm"
+                      >
+                        <span className="font-bold text-blue-600 shrink-0">#{idx + 1}</span>
+                        <div className="flex-grow">
+                          <span className="line-clamp-2">{cand.display_name}</span>
+                          <span className="text-[10px] text-slate-500 font-semibold mt-0.5 block">
+                            {cand.precisionLabel || "Street level"}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {searchError && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 font-semibold flex items-center justify-between">
+                  <span>{searchError}</span>
+                  <button onClick={() => setSearchError("")} className="text-xs text-rose-500 hover:text-rose-800 font-bold ml-2">✕</button>
+                </div>
+              )}
+
+              {navigationError && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 font-semibold flex items-center justify-between">
+                  <span>{navigationError}</span>
+                  <button onClick={() => setNavigationError("")} className="text-xs text-rose-500 hover:text-rose-800 font-bold ml-2">✕</button>
+                </div>
+              )}
 
               <Button 
                 onClick={handleRouteCalculation} 
                 className="w-full btn-premium btn-primary py-4 text-lg mt-4 h-auto font-bold"
-                disabled={loading || !origin.coords || !destination.coords}
+                disabled={loading || (!origin.coords && !origin.label) || (!destination.coords && !destination.label)}
               >
                 {loading ? (
                   <>
@@ -440,7 +804,7 @@ export default function SafeNavigation() {
               )}
 
               {deviationAlert && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 font-semibold animate-pulse">
                   {deviationAlert}
                 </div>
               )}
@@ -470,7 +834,16 @@ export default function SafeNavigation() {
                 <RouteComparison 
                   routes={routes}
                   selectedRoute={selectedRoute}
-                  onRouteSelect={setSelectedRoute}
+                  onRouteSelect={(mode) => {
+                    setSelectedRoute(mode);
+                    if (isNavigating && routes) {
+                      const newSelected = mode === "fastest" ? (routes.fastest ?? routes.safest) : (routes.safest ?? routes.fastest);
+                      if (newSelected) {
+                        setActiveNavigationRoute(newSelected);
+                        activeNavigationRouteRef.current = newSelected;
+                      }
+                    }
+                  }}
                 />
               </motion.div>
             )}
@@ -480,7 +853,63 @@ export default function SafeNavigation() {
         {/* Right Side: Map Feature */}
         <div className="lg:col-span-7">
           <Card className="premium-card overflow-hidden shadow-2xl border-0 h-full flex flex-col min-h-[600px]">
-            <div className="p-8 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6">
+            {/* Real-time active navigation status bar */}
+            {isNavigating && (
+              <div className="bg-slate-950 text-white p-4 border-b border-emerald-500/40 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
+                <div className="flex items-center gap-3">
+                  <div className="relative flex h-4 w-4">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500"></span>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-emerald-400">
+                      {navigationStatus === "off_route" ? "⚠️ OFF ROUTE - RECALCULATING" : "NAVIGATION ACTIVE"}
+                    </div>
+                    <div className="text-sm font-extrabold text-white flex items-center gap-3 mt-0.5">
+                      <span>{currentProgress.remainingDistanceLabel || "Tracking position..."}</span>
+                      {currentProgress.remainingDurationLabel && (
+                        <>
+                          <span className="text-slate-500">•</span>
+                          <span className="text-emerald-300">{currentProgress.remainingDurationLabel}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {currentLocationDetails && (
+                    <div className="hidden sm:block text-right text-[11px] text-slate-400 font-mono leading-tight">
+                      <div>LAT: {currentLocationDetails.currentLatitude.toFixed(4)}, LON: {currentLocationDetails.currentLongitude.toFixed(4)}</div>
+                      <div>ACCURACY: ±{Math.round(currentLocationDetails.accuracy)}m</div>
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    onClick={stopNavigation}
+                    className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-lg border border-rose-400 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <StopCircle className="w-4 h-4" />
+                    Stop Navigation
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {navigationStatus === "arrived" && (
+              <div className="p-4 bg-emerald-600 text-white font-black text-center text-base flex items-center justify-center gap-3 shadow-lg">
+                <CheckCircle2 className="w-6 h-6 animate-bounce" />
+                <span>🎉 Destination Reached! Navigation completed successfully.</span>
+                <button 
+                  onClick={() => setNavigationStatus("idle")} 
+                  className="ml-4 text-xs underline font-semibold bg-emerald-800 px-3 py-1 rounded-lg"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            <div className="p-6 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6">
               <div>
                 <div className="flex items-center gap-3 mb-1">
                   <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
@@ -489,27 +918,37 @@ export default function SafeNavigation() {
                   <h3 className="text-xl font-bold tracking-tight">Intelligence Map</h3>
                 </div>
                 <p className="text-slate-400 text-xs font-bold uppercase tracking-widest pl-11">
-                  Green Pins: Trusted Places | Red Pin: Origin
+                  Blinking Blue: Live Marker | Red: Origin | Green: Destination
                 </p>
               </div>
               
               <div className="flex gap-2">
-                <Button 
-                  onClick={startNavigation} 
-                  className="btn-premium bg-emerald-500 hover:bg-emerald-600 text-white border-0 shadow-lg shadow-emerald-500/20 font-bold"
-                  disabled={!routes}
-                >
-                  Start Mission
-                  <Navigation className="w-4 h-4 fill-white ml-2" />
-                </Button>
+                {!isNavigating ? (
+                  <Button 
+                    onClick={startNavigation} 
+                    className="btn-premium bg-emerald-500 hover:bg-emerald-600 text-white border-0 shadow-lg shadow-emerald-500/20 font-bold px-6 py-3"
+                    disabled={!routes}
+                  >
+                    START
+                    <Navigation className="w-4 h-4 fill-white ml-2" />
+                  </Button>
+                ) : (
+                  <Button 
+                    onClick={stopNavigation} 
+                    className="btn-premium bg-rose-600 hover:bg-rose-700 text-white border-0 shadow-lg shadow-rose-600/20 font-bold px-6 py-3"
+                  >
+                    STOP
+                    <StopCircle className="w-4 h-4 fill-white ml-2" />
+                  </Button>
+                )}
               </div>
             </div>
 
             <CardContent className="p-0 flex-grow relative">
               <div className="absolute inset-0 grayscale-[0.2] contrast-[1.1]">
                 <MapView
-                  center={origin.coords || userLiveCoords || [12.9716, 77.5946]}
-                  zoom={14}
+                  center={userLiveCoords || origin.coords || [12.9716, 77.5946]}
+                  zoom={15}
                   from={origin.coords}
                   to={destination.coords}
                   userLocation={userLiveCoords}
@@ -525,8 +964,8 @@ export default function SafeNavigation() {
                   }}
                 >
                   <RouteLayer
-                    fastestRoute={routes?.fastest?.path}
-                    safestRoute={routes?.safest?.path}
+                    fastestRoute={effectiveFastestPath}
+                    safestRoute={effectiveSafestPath}
                     selectedRoute={selectedRoute}
                     isIdentical={routes?.isIdentical}
                     dangerZones={routes?.dangerZones}

@@ -32,7 +32,7 @@ export function sanitizeText(text) {
   return clean.trim();
 }
 
-function normalizeCommunityReport(record) {
+export function normalizeCommunityReport(record) {
   if (!record) return null;
 
   const lat = Number(record.latitude);
@@ -376,7 +376,7 @@ export async function getCommunityReports() {
       .order("created_at", { ascending: false })
       .limit(1000);
 
-    if (!error && data && data.length > 0) {
+    if (!error && Array.isArray(data)) {
       console.log(`Supabase community_reports returned: ${data.length} records`);
       return data.map(normalizeCommunityReport).filter(Boolean);
     }
@@ -410,6 +410,12 @@ function safeSetStorageItem(key, value) {
 // In-memory store for reports created during session or when DB schema is upgrading
 const localReportsMemory = new Map();
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(str) {
+  return typeof str === "string" && UUID_REGEX.test(str.trim());
+}
+
 export async function addCommunityReport(report) {
   try {
     let authUser = null;
@@ -423,12 +429,12 @@ export async function addCommunityReport(report) {
     const briefingText = sanitizeText(report.intelligence_briefing || report.description || "");
     const reportTypeStr = report.report_type || report.category || "Incident";
     const categoryStr = report.category || report.report_type || "Incident";
-    const userIdentifier = report.user_id || authUser?.email || authUser?.id || "Anonymous";
+    
+    const rawUserId = report.user_id || authUser?.id;
+    const validUserId = isValidUuid(rawUserId) ? rawUserId.trim() : null;
 
-    // Standard fallback report
-    const fallbackReport = normalizeCommunityReport({
-      id: report.id || `rep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      user_id: userIdentifier,
+    const insertPayload = {
+      user_id: validUserId,
       report_type: reportTypeStr,
       category: categoryStr,
       latitude: lat,
@@ -436,58 +442,35 @@ export async function addCommunityReport(report) {
       location: report.location || `Lat: ${lat.toFixed(4)}, Lon: ${lon.toFixed(4)}`,
       time_cycle: report.time_cycle || "Day",
       safety_rating: Number(report.safety_rating || 3),
-      intelligence_briefing: briefingText,
-      description: briefingText,
-      status: "PROVISIONAL",
-      corroboration_count: 0,
-      negative_count: 0,
-      has_evidence: false,
-      additional_info: [],
-      created_at: new Date().toISOString()
-    });
+      intelligence_briefing: briefingText
+    };
 
-    localReportsMemory.set(fallbackReport.id, fallbackReport);
+    console.log("[CommunityReport] Submitting INSERT to Supabase community_reports:", insertPayload);
 
-    // Tier 1: Full schema with PROVISIONAL status
-    try {
-      const payload1 = {
-        user_id: userIdentifier,
-        report_type: reportTypeStr,
-        category: categoryStr,
-        latitude: lat,
-        longitude: lon,
-        location: report.location || `Lat: ${lat.toFixed(4)}, Lon: ${lon.toFixed(4)}`,
-        time_cycle: report.time_cycle || "Day",
-        safety_rating: Number(report.safety_rating || 3),
-        intelligence_briefing: briefingText,
-        description: briefingText,
-        status: "PROVISIONAL",
-        corroboration_count: 0,
-        negative_count: 0,
-        has_evidence: false,
-        additional_info: []
-      };
+    const { data, error } = await supabase
+      .from(PRIMARY_COMMUNITY_REPORTS_TABLE)
+      .insert(insertPayload)
+      .select()
+      .single();
 
-      const { data: d1, error: e1 } = await supabase
-        .from(PRIMARY_COMMUNITY_REPORTS_TABLE)
-        .insert(payload1)
-        .select()
-        .single();
+    if (error) {
+      console.error("[CommunityReport] INSERT FAILED in Supabase:", { error, payload: insertPayload });
+      throw new Error(`Supabase Database Error (${error.code || 'UNKNOWN'}): ${error.message}`);
+    }
 
-      if (!e1 && d1) {
-        const normalized = normalizeCommunityReport(d1);
-        localReportsMemory.set(normalized.id, normalized);
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("community-report-updated", { detail: { report: normalized, type: "NEW_REPORT" } }));
-        }
-        return normalized;
-      }
-    } catch {}
+    console.log("[CommunityReport] INSERT SUCCESS in Supabase:", data);
+
+    const normalized = normalizeCommunityReport(data);
+    if (report.user_id && !normalized.user_id) {
+      normalized.user_id = report.user_id;
+    }
+    localReportsMemory.set(normalized.id, normalized);
 
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("community-report-updated", { detail: { report: fallbackReport, type: "NEW_REPORT" } }));
+      window.dispatchEvent(new CustomEvent("community-report-updated", { detail: { report: normalized, type: "NEW_REPORT" } }));
     }
-    return fallbackReport;
+
+    return normalized;
   } catch (err) {
     console.error("Failed to add community report:", err);
     throw err;

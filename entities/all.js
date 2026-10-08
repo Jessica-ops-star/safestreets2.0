@@ -11,15 +11,24 @@ import {
 } from '../services/supabaseService.js';
 
 function readStore(key, seed) {
-    const raw = localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-    const initial = Array.isArray(seed) ? seed : [];
-    localStorage.setItem(key, JSON.stringify(initial));
-    return initial;
+	try {
+		if (typeof localStorage !== 'undefined' && localStorage) {
+			const raw = localStorage.getItem(key);
+			if (raw) return JSON.parse(raw);
+			const initial = Array.isArray(seed) ? seed : [];
+			localStorage.setItem(key, JSON.stringify(initial));
+			return initial;
+		}
+	} catch {}
+	return Array.isArray(seed) ? seed : [];
 }
 
 function writeStore(key, value) {
-	localStorage.setItem(key, JSON.stringify(value));
+	try {
+		if (typeof localStorage !== 'undefined' && localStorage) {
+			localStorage.setItem(key, JSON.stringify(value));
+		}
+	} catch {}
 }
 
 function generateId(prefix) {
@@ -278,52 +287,16 @@ export const SafetyReport = {
 			console.warn("Failed to fetch community reports from Supabase:", err);
 		}
 
-		const localItems = readStore('safety_reports', safetyReportsSeed);
-		const dbMap = new Map();
-
-		supabaseReports.forEach((item) => {
-			if (item?.id) dbMap.set(item.id, item);
-		});
-
-		localItems.forEach((item) => {
-			if (item?.id && !dbMap.has(item.id)) {
-				dbMap.set(item.id, item);
-			}
-		});
-
-		const merged = Array.from(dbMap.values());
 		const getTime = (item) => {
 			const raw = item?.created_date || item?.created_at || item?.timestamp;
 			if (!raw) return 0;
 			const d = new Date(raw);
 			return isNaN(d.getTime()) ? 0 : d.getTime();
 		};
-		return merged.sort((a, b) => getTime(b) - getTime(a));
+		return supabaseReports.sort((a, b) => getTime(b) - getTime(a));
 	},
 	async create(data) {
-		try {
-			const created = await addCommunityReport(data);
-			if (created) {
-				return created;
-			}
-		} catch (err) {
-			console.warn("Supabase report creation warning (persisting locally):", err);
-		}
-		const items = readStore('safety_reports', safetyReportsSeed);
-		const now = new Date().toISOString();
-		const newItem = {
-			id: generateId('report'),
-			created_date: now,
-			created_at: now,
-			status: 'PROVISIONAL',
-			corroboration_count: 0,
-			negative_count: 0,
-			has_evidence: false,
-			...data
-		};
-		items.unshift(newItem);
-		writeStore('safety_reports', items);
-		return newItem;
+		return await addCommunityReport(data);
 	},
 	async corroborate(reportId, responseType, additionalInfo = "") {
 		try {
@@ -347,14 +320,11 @@ export const SafetyReport = {
 	async delete(id) {
 		if (!id) return false;
 		try {
-			await deleteCommunityReport(id);
+			return await deleteCommunityReport(id);
 		} catch (err) {
 			console.warn("Supabase report delete exception:", err);
+			return false;
 		}
-		const items = readStore('safety_reports', safetyReportsSeed);
-		const filtered = items.filter((i) => i.id !== id);
-		writeStore('safety_reports', filtered);
-		return true;
 	}
 };
 

@@ -42,7 +42,7 @@ import {
 
 export default function Emergency() {
   const navigate = useNavigate();
-  const { getCurrentLocation, reverseGeocode, saveLocation } = useLocationTracking();
+  const { getCurrentLocation, updateCompleteLocation, location: trackedLocation } = useLocationTracking();
 
   const [contacts, setContacts] = useState([]);
   const [activeAlert, setActiveAlert] = useState(null);
@@ -61,6 +61,16 @@ export default function Emergency() {
   const [nearestHospital, setNearestHospital] = useState(null);
 
   const isFinalizingRef = React.useRef(false);
+
+  // Automatically keep lastKnownLocation synced with trackedLocation when user moves
+  useEffect(() => {
+    if (trackedLocation?.latitude && trackedLocation?.longitude) {
+      setLastKnownLocation({
+        latitude: Number(trackedLocation.latitude),
+        longitude: Number(trackedLocation.longitude)
+      });
+    }
+  }, [trackedLocation]);
 
   // Sync state with sosStateService
   const syncSOSState = () => {
@@ -132,7 +142,7 @@ export default function Emergency() {
 
       // Fetch user live location on mount for nearby police station & hospital context
       try {
-        const loc = await getCurrentLocation();
+        const loc = await updateCompleteLocation();
         if (loc?.latitude && loc?.longitude) {
           setLastKnownLocation({
             latitude: Number(loc.latitude),

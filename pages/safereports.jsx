@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { SafetyReport } from "@/entities/all";
+import { supabase } from "../src/lib/supabase.js";
+import { normalizeCommunityReport } from "../services/supabaseService.js";
 import { Button } from "@/components/ui/button.jsx";
 import { Card, CardContent } from "@/components/ui/card.jsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.jsx";
@@ -32,6 +34,62 @@ export default function SafetyReports() {
 
   useEffect(() => {
     loadReports();
+
+    // 1. Supabase Realtime postgres_changes subscription for community_reports
+    const channel = supabase
+      .channel("realtime-community-reports")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "community_reports",
+        },
+        (payload) => {
+          console.log("📡 Realtime report payload received:", payload.eventType, payload.new);
+          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
+            const raw = payload.new;
+            if (!raw) return;
+            const normalized = normalizeCommunityReport(raw);
+
+            setReports((prev) => {
+              const exists = prev.some((r) => String(r.id) === String(normalized.id));
+              if (exists) {
+                return prev.map((r) => (String(r.id) === String(normalized.id) ? { ...r, ...normalized } : r));
+              } else {
+                return [normalized, ...prev];
+              }
+            });
+          } else if (payload.eventType === "DELETE") {
+            if (payload.old?.id) {
+              setReports((prev) => prev.filter((r) => String(r.id) !== String(payload.old.id)));
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    // 2. Custom local window event listener for immediate fallback
+    const handleLocalUpdate = (event) => {
+      const { report: updatedReport } = event.detail || {};
+      if (!updatedReport || !updatedReport.id) return;
+
+      setReports((prev) => {
+        const exists = prev.some((r) => String(r.id) === String(updatedReport.id));
+        if (exists) {
+          return prev.map((r) => (String(r.id) === String(updatedReport.id) ? { ...r, ...updatedReport } : r));
+        } else {
+          return [updatedReport, ...prev];
+        }
+      });
+    };
+
+    window.addEventListener("community-report-updated", handleLocalUpdate);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener("community-report-updated", handleLocalUpdate);
+    };
   }, []);
 
   const loadReports = async () => {

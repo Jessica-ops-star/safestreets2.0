@@ -148,7 +148,7 @@ export async function callEmergencyContact(phoneNumber, userName = "A Safe Stree
 
     // If a public domain/ngrok URL is configured, use the TwiML endpoint URL
     if (webhookUrl && !webhookUrl.includes("localhost") && !webhookUrl.includes("127.0.0.1")) {
-      const cleanBase = webhookUrl.replace(/\/$/, "");
+      const cleanBase = webhookUrl.replace(/\/$/, "").replace(/\/api\/twilio\/voice$/i, "");
       const params = new URLSearchParams();
       if (alertId) params.append("alertId", alertId);
       if (rawName) params.append("name", rawName);

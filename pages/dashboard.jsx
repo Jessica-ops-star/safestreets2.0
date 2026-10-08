@@ -107,39 +107,54 @@ export default function Dashboard() {
 
   useEffect(() => {
     let notificationChannel = null;
+    let reportChannel = null;
 
-    const setupNotificationListener = async () => {
+    const setupListeners = async () => {
       try {
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-        if (userError || !user) return;
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          notificationChannel = supabase
+            .channel(`user-notifications-${user.id}`)
+            .on(
+              'postgres_changes',
+              {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'notifications',
+                filter: `user_id=eq.${user.id}`
+              },
+              (payload) => {
+                console.log("🚨 Realtime notification received:", payload.new);
+                setNearbySosNotification(payload.new);
+              }
+            )
+            .subscribe();
+        }
 
-        notificationChannel = supabase
-          .channel(`user-notifications-${user.id}`)
+        reportChannel = supabase
+          .channel('dashboard-community-reports')
           .on(
             'postgres_changes',
             {
-              event: 'INSERT',
+              event: '*',
               schema: 'public',
-              table: 'notifications',
-              filter: `user_id=eq.${user.id}`
+              table: 'community_reports'
             },
-            (payload) => {
-              console.log("🚨 Realtime notification received:", payload.new);
-              setNearbySosNotification(payload.new);
+            () => {
+              void loadDashboardData();
             }
           )
           .subscribe();
       } catch (err) {
-        console.error("Error setting up notification realtime listener:", err);
+        console.error("Error setting up realtime listeners:", err);
       }
     };
 
-    setupNotificationListener();
+    setupListeners();
 
     return () => {
-      if (notificationChannel) {
-        supabase.removeChannel(notificationChannel);
-      }
+      if (notificationChannel) supabase.removeChannel(notificationChannel);
+      if (reportChannel) supabase.removeChannel(reportChannel);
     };
   }, []);
 

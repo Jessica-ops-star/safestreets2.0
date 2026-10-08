@@ -123,9 +123,10 @@ test("Req Test 5: No nearby users -> report remains PROVISIONAL", async () => {
 });
 
 test("Req Test 6: Reporter cannot validate through backend", async () => {
+  const reporterId = "11111111-1111-1111-1111-111111111111";
   const report = await addCommunityReport({
     id: "rep-self-val-backend",
-    user_id: "reporter-123",
+    user_id: reporterId,
     latitude: 13.0827,
     longitude: 80.2707,
     description: "Self val test"
@@ -133,7 +134,7 @@ test("Req Test 6: Reporter cannot validate through backend", async () => {
 
   await assert.rejects(
     async () => {
-      await corroborateReport(report.id, "SIMILAR", "Self feedback", "reporter-123");
+      await corroborateReport(report.id, "SIMILAR", "Self feedback", reporterId);
     },
     (err) => Boolean(err && err.message && err.message.toLowerCase().includes("cannot validate your own")),
     "Backend must reject self-validation attempt by creator"
